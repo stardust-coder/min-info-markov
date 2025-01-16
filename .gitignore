@@ -1,5 +1,6 @@
 config
 result
+output/*
 __pycache__
 *.log
 .DS_Store
