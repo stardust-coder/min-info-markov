@@ -4,6 +4,7 @@ from time import time
 from tqdm import tqdm
 from model import func_h_ar, func_h_var
 from exchange import exchange_var
+from utils import raw_to_dfs
 
 #Load config
 import json
@@ -48,13 +49,7 @@ def simulation():
     return var_data
 
 def run(rawdata):    
-    dfs = []
-    for j in range(dim):
-        df = []
-        for t in range(dim,len(rawdata)):
-            df.append(rawdata[t-dim:t+1,j])
-        dfs.append(df)        
-    dfs = np.array(dfs) #shape:[dim, T-order,order+1]
+    dfs = raw_to_dfs(rawdata,dim,order)
     num_of_parameter = dim*dim*order
 
     # Fisher scoring
@@ -94,6 +89,7 @@ rmse = []
 
 for _ in range(num_runs):    
     data = simulation() #shape: (T,dim), d: order
+    
     phi_hat, l2_err, comp_time = run(data)
     computational_times.append(comp_time)
     #Result
