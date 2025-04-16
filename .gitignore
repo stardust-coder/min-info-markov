@@ -1,0 +1,9 @@
+config
+data
+result
+logs
+output
+notebook
+__pycache__
+*.log
+.DS_Store
