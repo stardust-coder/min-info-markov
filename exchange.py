@@ -43,7 +43,7 @@ def exchange_var(df,rawdata,L,phi,config):
             hstar_list.append(h2)
             l = l+1
             df_aux = df_aux_tmp.copy()
-            print(f"{l} samples accepted ... continue")
+            # print(f"{l} samples accepted ... continue")
         trial += 1
     print("Acceptance rate:", L,"/",trial,"=",L/trial)
     return perm_list[1:], hstar_list[1:], df_aux, L/trial #perm[i] has the shape (T-d,d+1)

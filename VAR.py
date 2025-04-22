@@ -32,7 +32,7 @@ def simulation():
     error_mean = np.array(config["mean"])
     var_data = []
     for _ in range(order):
-        var_data.append([0,0]) # initial value
+        var_data.append([0 for _ in range(config["dim"])]) # initial value
     for _ in range(order,steps+order):
         v = np.zeros((dim,1))
         for k in range(1,order+1):
@@ -42,10 +42,10 @@ def simulation():
 
     var_data = np.array(var_data[order:])
     plt.figure(figsize=(15,5))
-    plt.plot(var_data[:,0])
-    plt.plot(var_data[:,1])
+    for k in range(config["dim"]):
+        plt.plot(var_data[:,k])
     plt.title(config)
-    plt.savefig("output/simulated-data.png")
+    plt.savefig("simulated-data.png")
     return var_data
 
 def run(rawdata):    
@@ -77,7 +77,8 @@ def run(rawdata):
     comp_time = time()-starttime
     print("秒数:",comp_time,"(s)")
     phi_hat = current_theta
-    l2_err = np.linalg.norm(phi_hat-np.array(phi).flatten().reshape((num_of_parameter,1)))
+    phi_true = (np.array(phi)@np.linalg.inv(config["sigma"])).flatten().reshape((num_of_parameter,1))
+    l2_err = np.linalg.norm(phi_hat-phi_true)
     
     return phi_hat, l2_err, comp_time
     
@@ -106,4 +107,5 @@ for _ in range(num_runs):
 print(f"{num_runs} 回の施行結果")
 print(result)
 print(rmse)
+print(computational_times)
 print("RMSE=",sum(rmse)/len(rmse))
