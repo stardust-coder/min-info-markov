@@ -27,7 +27,7 @@ print("--- Experimental setting ---")
 print(config)
 
 
-def simulation():
+def simulation(save_fig=False):
     error_sigma = np.array(config["sigma"])
     error_mean = np.array(config["mean"])
     var_data = []
@@ -41,11 +41,12 @@ def simulation():
         var_data.append(v.flatten().tolist())
 
     var_data = np.array(var_data[order:])
-    plt.figure(figsize=(15,5))
-    for k in range(config["dim"]):
-        plt.plot(var_data[:,k])
-    plt.title(config)
-    plt.savefig("simulated-data.png")
+    if save_fig:
+        plt.figure(figsize=(15,5))
+        for k in range(config["dim"]):
+            plt.plot(var_data[:,k])
+        plt.title(config)
+        plt.savefig("simulated-data.png")
     return var_data
 
 def run(rawdata):    
