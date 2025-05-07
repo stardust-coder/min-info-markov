@@ -35,10 +35,8 @@ def simulate_VAR(dim,order=1,steps=500):
     # phi[0][1][0] = 0.1
     # phi[0][0][1] = 0.1
     # phi[0][1][1] = 0.5
-    phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
+    # phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
     # phi = [0.5*np.identity(dim),0.3*np.identity(dim),0.1*np.identity(dim)]
-
-
 
     for item in phi:
         assert item.shape == (dim,dim)
@@ -92,12 +90,12 @@ def MLE(Y, order):
 
 def run():
     # raw = load_ecog()
-    raw, true_parameter = simulate_VAR(dim=1,order=2,steps=900)
+    raw, true_parameter = simulate_VAR(dim=1,order=1,steps=10000)
     # sample_plot(raw)
 
     #model parameters
     dim = 1
-    order = 2
+    order = 1
 
     def raw_to_dfs(rawdata):
         dfs = []
@@ -169,7 +167,7 @@ def run():
         print(f"Optimization took {end_fit-start_fit} seconds.")
         return clf.w, end_fit-start_fit
 
-    def besag_PMLE_online_SGD(df, raw, eta=0.1, n_iter=10000):
+    def besag_PMLE_online_SGD(df, raw, eta=0.01, n_iter=10000):
         from random import sample
         n = len(raw)
         base_h = func_h_matrix(df, dim, order)
@@ -196,9 +194,9 @@ def run():
             if it % 1000 == 0:
                 print(f"Iter {it}, pred: {pred:.4f}")
             
-            if np.linalg.norm(step) < 1e-5:
-                print(f"Optimization ended with {it} steps.")
-                break
+            # if np.linalg.norm(step) < 1e-5:
+            #     print(f"Optimization ended with {it} steps.")
+            #     break
         end_fit = time()
         return w, end_fit-start_fit
 
@@ -226,6 +224,27 @@ def run():
         print(f"Optimization took {end_fit-start_fit} seconds.")
         return clf.w, end_fit-start_fit
 
+    def besag_PMLE_chen(df,raw):
+        n = len(raw)-2*order
+        X = np.zeros((int(n/2),dim*dim*order))
+        base_h = func_h_matrix(df, dim, order)  # ← 固定値として1回だけ呼ぶ
+        index_list_prep = [x+order+1 for x in list(range(n))]
+        random.shuffle(index_list_prep)
+        index_list = [item for item in zip(index_list_prep[:int(n/2)], index_list_prep[int(n/2):])]
+        for i, (s, t) in enumerate(tqdm(index_list)):
+            raw_tmp = copy.deepcopy(raw)
+            raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1].copy(),raw_tmp[s-1].copy()
+            df_tmp = raw_to_dfs(raw_tmp)
+            x_ = base_h-func_h_matrix(df_tmp,dim,order) # time bottleneck      
+            X[i] = x_.reshape(dim*dim*order,)
+
+        y = np.ones(int(n/2))
+        print("Start Fitting ...")
+        start_fit = time()
+        clf = LogisticRegression(eta=1,n_iter=500).fit(X, y)
+        end_fit = time()
+        print(f"Optimization took {end_fit-start_fit} seconds.")
+        return clf.w, end_fit-start_fit
 
     ### MLE for AR or VAR
     # start_time = time()
@@ -242,6 +261,7 @@ def run():
     start_time = time()
     theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
     # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
+    # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
     end_time = time()
 
     #Result
