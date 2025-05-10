@@ -29,14 +29,15 @@ def load_ecog():
     return raw
 
 def simulate_VAR(dim,order=1,steps=500):
+    # np.random.seed(seed=32)
     #Model parameters
     phi = [0.5*np.identity(dim) for _ in range(order)]
     # phi[0][0][0] = 0.5
     # phi[0][1][0] = 0.1
     # phi[0][0][1] = 0.1
     # phi[0][1][1] = 0.5
-    # phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
-    # phi = [0.5*np.identity(dim),0.3*np.identity(dim),0.1*np.identity(dim)]
+    phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
+    phi = [0.0*np.identity(dim),0.0*np.identity(dim),0.0*np.identity(dim)]
 
     for item in phi:
         assert item.shape == (dim,dim)
@@ -89,13 +90,13 @@ def MLE(Y, order):
     
 
 def run():
-    # raw = load_ecog()
-    raw, true_parameter = simulate_VAR(dim=1,order=1,steps=10000)
+    raw, true_parameter = simulate_VAR(dim=1,order=3,steps=100)
     # sample_plot(raw)
+    # print(raw)
 
     #model parameters
     dim = 1
-    order = 1
+    order = 3
 
     def raw_to_dfs(rawdata):
         dfs = []
@@ -247,22 +248,22 @@ def run():
         return clf.w, end_fit-start_fit
 
     ### MLE for AR or VAR
-    # start_time = time()
-    # res_mle = MLE(raw, order=order)
-    # # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
-    # theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
-    # # theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
-    # # theta_hat = theta_hat.flatten() #VAR(1) case
-    # optimization_time = None
-    # end_time = time()
+    start_time = time()
+    res_mle = MLE(raw, order=order)
+    # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
+    theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
+    # theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
+    # theta_hat = theta_hat.flatten() #VAR(1) case
+    optimization_time = None
+    end_time = time()
 
     ### Besag's PMLE for any model
-    df = raw_to_dfs(raw)
-    start_time = time()
-    theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
-    # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
-    # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
-    end_time = time()
+    # df = raw_to_dfs(raw)
+    # start_time = time()
+    # theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
+    # # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
+    # # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
+    # end_time = time()
 
     #Result
     print("--- 推定するパラメタ数 --- ")

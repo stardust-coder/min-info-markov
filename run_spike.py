@@ -343,9 +343,26 @@ def convert2historgram(data, save_fig=False):
 
 if __name__ == "__main__":
     import scipy.io
-    # v4 = scipy.io.loadmat('/home/sukeda/min-info-markov-new/data/V4 Utah Array Plaid Movie Data/Wi170428_spikes.mat')
+    v4 = scipy.io.loadmat('/home/sukeda/min-info-markov-new/data/V4 Utah Array Plaid Movie Data/Wi170428_spikes.mat')
     #もしくは
-    v4 = scipy.io.loadmat('/home/sukeda/min-info-markov-new/data/V4 Utah Array Plaid Movie Data/Wi170428.mat')
+    import h5py
+    
+    def h5_to_dict(obj):
+        result = {}
+        for key in obj.keys():
+            item = obj[key]
+            if isinstance(item, h5py.Group):
+                result[key] = h5_to_dict(item)  # 再帰的に辞書化
+            elif isinstance(item, h5py.Dataset):
+                result[key] = item[()]  # NumPy array として読み込み
+        return result
+
+    # 読み込みと変換
+    with h5py.File('/home/sukeda/min-info-markov-new/data/V4 Utah Array Plaid Movie Data/Wi170428.mat', 'r') as f:
+        v4 = h5_to_dict(f)
+
+    import pdb; pdb.set_trace()
+
     lfp = v4["ex"]["LFP"][0, 0]
     lfp_channels = v4["ex"]["LFPCHANNELS"][0, 0]
     
