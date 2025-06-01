@@ -37,13 +37,13 @@ def simulate_VAR(dim,order=1,steps=500):
     # phi[0][0][1] = 0.1
     # phi[0][1][1] = 0.5
     phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
-    phi = [0.0*np.identity(dim),0.0*np.identity(dim),0.0*np.identity(dim)]
+    # phi = [0.1*np.identity(dim),0.3*np.identity(dim),0.5*np.identity(dim)]
 
     for item in phi:
         assert item.shape == (dim,dim)
     assert len(phi) == order
 
-    sigma = np.identity(dim)*0.5 ### noise variance
+    sigma = np.identity(dim) * 0.5 ### noise variance
     assert sigma.shape == (dim,dim)
 
     mean = np.zeros((dim))
@@ -90,13 +90,13 @@ def MLE(Y, order):
     
 
 def run():
-    raw, true_parameter = simulate_VAR(dim=1,order=3,steps=100)
+    raw, true_parameter = simulate_VAR(dim=1,order=2,steps=100)
     # sample_plot(raw)
     # print(raw)
 
     #model parameters
     dim = 1
-    order = 3
+    order = 2
 
     def raw_to_dfs(rawdata):
         dfs = []
@@ -149,21 +149,26 @@ def run():
     from besag import LogisticRegression
     def besag_PMLE(df,raw):
         n = len(raw)
-        X = np.zeros((int((n-2)*(n-3)/2),dim*dim*order))
-        base_h = func_h_matrix(df, dim, order)  # ← 固定値として1回だけ呼ぶ
-
+        X = np.zeros((int((n-2*order)*(n-2*order-1)/2),dim*dim*order))
+        base_h = func_h(df, dim, order)  # ← 固定値として1回だけ呼ぶ.
+        
         for i, (s, t) in enumerate(tqdm(combinations(range(order+1,n-order+1),2))):
-            # print(i,"/", int(n*(n-1)/2))
+            # print(i,"/", int((n-2*order)*(n-2*order-1)/2))
             raw_tmp = copy.deepcopy(raw)
             raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1].copy(),raw_tmp[s-1].copy()
             df_tmp = raw_to_dfs(raw_tmp)
-            x_ = base_h-func_h_matrix(df_tmp,dim,order) # time bottleneck            
-            X[i] = x_.reshape(dim*dim*order,)
+            x_ = base_h-func_h(df_tmp,dim,order) # time bottleneck            
+            X[i] = x_.reshape(dim*dim*order,)        
 
-        y = np.ones(int((n-2)*(n-3)/2))
+        y = np.ones(int((n-2*order)*(n-2*order-1)/2))
         print("Start Fitting ...")
         start_fit = time()
-        clf = LogisticRegression(eta=1,n_iter=500).fit(X, y)
+        clf = LogisticRegression(eta=0.1,n_iter=10000)
+        clf.fit(X, y)
+        clf.eta, clf.n_iter = 0.01, 10000
+        clf.fit_add(X, y, True)
+        clf.eta, clf.n_iter = 0.001, 10000
+        clf.fit_add(X, y, True)
         end_fit = time()
         print(f"Optimization took {end_fit-start_fit} seconds.")
         return clf.w, end_fit-start_fit
@@ -248,22 +253,22 @@ def run():
         return clf.w, end_fit-start_fit
 
     ### MLE for AR or VAR
-    start_time = time()
-    res_mle = MLE(raw, order=order)
-    # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
-    theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
-    # theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
-    # theta_hat = theta_hat.flatten() #VAR(1) case
-    optimization_time = None
-    end_time = time()
-
-    ### Besag's PMLE for any model
-    # df = raw_to_dfs(raw)
     # start_time = time()
-    # theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
-    # # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
-    # # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
+    # res_mle = MLE(raw, order=order)
+    # # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
+    # theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
+    # # theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
+    # # theta_hat = theta_hat.flatten() #VAR(1) case
+    # optimization_time = None
     # end_time = time()
+
+    ## Besag's PMLE for any model
+    df = raw_to_dfs(raw)
+    start_time = time()
+    theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
+    # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
+    # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
+    end_time = time()
 
     #Result
     print("--- 推定するパラメタ数 --- ")

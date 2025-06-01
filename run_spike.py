@@ -360,8 +360,7 @@ if __name__ == "__main__":
     # 読み込みと変換
     with h5py.File('/home/sukeda/min-info-markov-new/data/V4 Utah Array Plaid Movie Data/Wi170428.mat', 'r') as f:
         v4 = h5_to_dict(f)
-
-    import pdb; pdb.set_trace()
+        nstime = v4["ex"]["NSTIME"][0,0]
 
     lfp = v4["ex"]["LFP"][0, 0]
     lfp_channels = v4["ex"]["LFPCHANNELS"][0, 0]
@@ -380,7 +379,6 @@ if __name__ == "__main__":
 
     channel = channels[unit,0]
     univariate_lfp = lfp[channel]
-    import pdb; pdb.set_trace()
 
     ###プロット
     # raster_plot(events, repeats, unit, condition)
@@ -393,12 +391,6 @@ if __name__ == "__main__":
     #     merged = merged + tmp
     # merged.sort()
     # counts = convert2historgram(merged, save_fig=True)
-
-
-
-    
-
-    import pdb; pdb.set_trace()
     
 
 
