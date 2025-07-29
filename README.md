@@ -1,19 +1,23 @@
-# Minimum information Markov modeling
+# Minimum information Markov model
 
-This branch implements the pseudo likelihood estimation on the minimum information Markov model for time series data.
+This branch implements the minimum information Markov model for time series data.
 
 ## Basic Usage
 1. Set data. (l96~98)
     - Use simulation data from AR processes if needed.
 2. Set model parameters. (l99~100)
-3. Choose estimation method (l230~245)
+3. Choose estimation method (l255~271)
     - For AR models, you may compare with MLE.
     - We recommend PLE (default).
-
-4. Run estimation.
+4. Set func_h used in PLE.
+    - l175 defines the func_h `func_h = func_h_matrix`. Note that `func_h_naive` is very slow. Use equivalent accelerations `func_h_einsum` or `func_h_matrix(recommended)`.
+5. Run estimation.
 ```
 python run.py
 ```
+
+Note: The optimization procedure in PLE is in fact a standard logistic regression. The optimization method is a simple gradient descent with zero initialization and inverse time decayed learning rate.
+
 
 ## Simple example on univariate binary spike train data
 
@@ -31,8 +35,6 @@ which is defined as "func_h_v2" in the code.
 ```
 python run_LFP.py
 ```
-
-
 
 ## Cross domain analysis of LFP and spike trains
 

@@ -31,13 +31,21 @@ def load_ecog():
 def simulate_VAR(dim,order=1,steps=500):
     # np.random.seed(seed=32)
     #Model parameters
-    phi = [0.5*np.identity(dim) for _ in range(order)]
+    phi = [0.5*np.identity(dim)]
+    phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
+    # phi = [0.5*np.identity(dim),0.3*np.identity(dim),0.1*np.identity(dim)]
+
+    # phi = [0.5*np.identity(dim) for _ in range(order)]
+
     # phi[0][0][0] = 0.5
     # phi[0][1][0] = 0.1
     # phi[0][0][1] = 0.1
     # phi[0][1][1] = 0.5
-    phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
-    # phi = [0.1*np.identity(dim),0.3*np.identity(dim),0.5*np.identity(dim)]
+
+    # phi[1][0][0] = 0.3
+    # phi[1][1][0] = 0.1
+    # phi[1][0][1] = 0.1
+    # phi[1][1][1] = 0.3
 
     for item in phi:
         assert item.shape == (dim,dim)
@@ -70,10 +78,24 @@ def simulate_VAR(dim,order=1,steps=500):
     var_data = np.array(var_data[order:])
     
     assert (dim,order) in [(1,1),(1,2),(1,3),(2,1)] #AR(1),AR(2),AR(3),VAR(1)
-    Theta = [phi[k].T@np.linalg.inv(sigma) for k in range(order)]
-    Theta = np.concatenate(Theta)
-
+    if order == 1:
+        Theta = [phi[0].T@np.linalg.inv(sigma)]
+        Theta = np.concatenate(Theta)
+    if (dim, order) == (1,2):
+        phi1 = phi[0].item()
+        phi2 = phi[1].item()
+        sigma2 = sigma[0][0].item()
+        Theta = [(phi1 - phi1*phi2)/sigma2, phi2/sigma2]
+        Theta = np.array([Theta])
+    if (dim, order) == (1,3):
+        phi1 = phi[0].item()
+        phi2 = phi[1].item()
+        phi3 = phi[2].item()
+        sigma2 = sigma[0][0].item()
+        Theta = [(phi1 - phi1*phi2 - phi2*phi3)/sigma2, (phi2 - phi1*phi3)/sigma2, phi3/sigma2]
+        Theta = np.array([Theta])
     print("True Parameter (estimation target):", Theta.flatten())
+    
     return var_data[:,0,:], Theta.flatten()
 
 def MLE(Y, order):
@@ -90,7 +112,7 @@ def MLE(Y, order):
     
 
 def run():
-    raw, true_parameter = simulate_VAR(dim=1,order=2,steps=100)
+    raw, true_parameter = simulate_VAR(dim=1,order=2,steps=1000)
     # sample_plot(raw)
     # print(raw)
 
@@ -117,7 +139,7 @@ def run():
             tmp_.append(np.kron(xt,xtj))   #dependence modeling
         return np.concatenate(tmp_).reshape((dim*dim*order,1))
         
-    def func_h(df, dim, order):
+    def func_h_naive(df, dim, order):
         h_all = np.zeros((dim*dim*order,1))
         for t in range(df.shape[1]):
             h_all += func_h_t(df,t,dim,order)
@@ -150,6 +172,7 @@ def run():
     def besag_PMLE(df,raw):
         n = len(raw)
         X = np.zeros((int((n-2*order)*(n-2*order-1)/2),dim*dim*order))
+        func_h = func_h_matrix
         base_h = func_h(df, dim, order)  # ← 固定値として1回だけ呼ぶ.
         
         for i, (s, t) in enumerate(tqdm(combinations(range(order+1,n-order+1),2))):
@@ -163,12 +186,18 @@ def run():
         y = np.ones(int((n-2*order)*(n-2*order-1)/2))
         print("Start Fitting ...")
         start_fit = time()
-        clf = LogisticRegression(eta=0.1,n_iter=10000)
-        clf.fit(X, y)
-        clf.eta, clf.n_iter = 0.01, 10000
-        clf.fit_add(X, y, True)
-        clf.eta, clf.n_iter = 0.001, 10000
-        clf.fit_add(X, y, True)
+        
+        #Basic Optimization
+        clf = LogisticRegression(eta=0.1,n_iter=1000)
+        clf.fit(X, y, True)
+
+        #Advanced Optimization
+        # clf = LogisticRegression(eta=0.1,n_iter=10000)
+        # clf.fit(X, y, False)
+        # clf.eta, clf.n_iter = 0.01, 10000
+        # clf.fit_add(X, y, True)
+        # clf.eta, clf.n_iter = 0.001, 10000
+        # clf.fit_add(X, y, False)
         end_fit = time()
         print(f"Optimization took {end_fit-start_fit} seconds.")
         return clf.w, end_fit-start_fit
@@ -291,12 +320,14 @@ def run():
 if __name__ == "__main__":
     loss_list = []
     time_list = []
-    for r in range(30):
+    for r in range(1):
         print(f"Run {r}")
         _, loss_, time_ = run()
         loss_list.append(loss_)
         time_list.append(time_)
 
+    from scipy import stats
     print("Average L2 error for 30 runs:", sum(loss_list)/len(loss_list))
+    print("Standard error for 30 runs", stats.sem(loss_list))
     print("Average whole estimation time for 30 runs:",sum([t[0] for t in time_list])/len(time_list))
     print("Average time consumed for gradient descent for 30 runs:",sum([t[1] for t in time_list])/len(time_list))

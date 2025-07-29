@@ -11,25 +11,30 @@ class LogisticRegression(object):
         self.w = np.zeros(X.shape[1])
         m = X.shape[0]
         prev_loss = np.inf
-        for it_ in range(self.n_iter):
-            if verbose:
-                print(self.w.T)
-            output = X.dot(self.w)
-            p = self._sigmoid(output)
+
+        for it in range(self.n_iter):
+            p = self._sigmoid(X @ self.w)
             errors = y - p
-            step = self.eta / m * errors.dot(X)
+
+            # 学習率減衰
+            eta_t = self.eta / (1 + 0.05 * it)
+
+            # 重み更新
+            step = eta_t / m * (X.T @ errors)
             self.w += step
 
+            # ロス計算
             loss = -np.mean(y * np.log(p + 1e-15) + (1 - y) * np.log(1 - p + 1e-15))
             if verbose:
-                print(f"Iter {it_}: loss={loss:.6f}, step_norm={np.linalg.norm(step):.6f}")
+                print(f"Iter {it+1}: loss={loss:.6f}")
 
-            # ロスの変化で収束判定
-            if it_ > 10 and abs(prev_loss - loss) < 1e-5:
-                print(f"Converged at iteration {it_+1}")
+            # シンプルな収束判定
+            if abs(prev_loss - loss) < 1e-6:
+                if verbose:
+                    print(f"Converged at iteration {it+1}")
                 break
             prev_loss = loss
-        print(f"Optimization ended with full {it_+1} steps.")
+
         return self
     
     def fit_add(self, X, y, verbose=False):

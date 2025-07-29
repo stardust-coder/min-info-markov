@@ -249,9 +249,10 @@ if __name__ == "__main__":
     lfp_all = pd.read_csv("./data/V4 Utah Array Plaid Movie Data/Wi170428_LFP.csv")
 
     df = []
-    for channel in tqdm(range(96)):
-    # for channel in [0]:
+    # for channel in tqdm(range(96)):
+    for channel in [0]:
         lfp = lfp_all.iloc[:,[channel]].to_numpy()
+        print("Data Length:", len(lfp))
         #If standard scaling...
         from sklearn.preprocessing import StandardScaler
         scaler = StandardScaler()
@@ -263,6 +264,7 @@ if __name__ == "__main__":
         K = 3
         print("Log likelihood", log_likelihood)
         print("AIC=", -2*log_likelihood + K * 2)
-        print("PIC=", -2*log_likelihood + K * log(len(lfp)))
+        print("PIC1=", -2*log_likelihood + K * log(len(lfp)))
+        print("PIC2=", -2*log_likelihood + K * log(int((len(lfp)-2)*(len(lfp)-3)/2)))
         df.append(list(theta_hat.T))
     import pdb; pdb.set_trace()
