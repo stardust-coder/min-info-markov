@@ -19,8 +19,8 @@ def sample_plot(data):
     df.plot(figsize=(15,5))
     plt.savefig("sample_plot.png")
 
-def load_ecog():
-    file = "Ji20180308S1c_ECoG_raw.csv"
+def load_ecog(): #Not used
+    file = "marmoset/Ji20180308S1c_ECoG_raw.csv"
     raw = np.loadtxt(f"data/{file}", delimiter=',')
     raw = raw[:500,[0]] # first electrode
     min_ = np.min(raw)
@@ -28,24 +28,34 @@ def load_ecog():
     raw = (raw-min_)/(max_-min_)
     return raw
 
-def simulate_VAR(dim,order=1,steps=500):
+def simulate_VAR(dim,order,steps):
     # np.random.seed(seed=32)
     #Model parameters
-    phi = [0.5*np.identity(dim)]
-    phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
-    # phi = [0.5*np.identity(dim),0.3*np.identity(dim),0.1*np.identity(dim)]
-
-    # phi = [0.5*np.identity(dim) for _ in range(order)]
-
-    # phi[0][0][0] = 0.5
-    # phi[0][1][0] = 0.1
-    # phi[0][0][1] = 0.1
-    # phi[0][1][1] = 0.5
-
-    # phi[1][0][0] = 0.3
-    # phi[1][1][0] = 0.1
-    # phi[1][0][1] = 0.1
-    # phi[1][1][1] = 0.3
+    phi = [0.5*np.identity(dim) for _ in range(order)]
+    if (dim,order) == (1,1):
+        phi = [0.5*np.identity(dim)]
+    elif (dim,order) == (1,2):
+        phi = [0.5*np.identity(dim),0.3*np.identity(dim)]
+    elif (dim,order) == (1,3):
+        phi = [0.5*np.identity(dim),0.3*np.identity(dim),0.1*np.identity(dim)]
+    elif dim == 1:
+        phi = [0.5*np.identity(dim) for _ in range(order)]
+    elif (dim,order) == (2,1):
+        phi[0][0][0] = 0.5
+        phi[0][1][0] = 0.1
+        phi[0][0][1] = 0.1
+        phi[0][1][1] = 0.5
+    elif (dim,order) == (2,1):
+        phi[0][0][0] = 0.5
+        phi[0][1][0] = 0.1
+        phi[0][0][1] = 0.1
+        phi[0][1][1] = 0.5
+        phi[1][0][0] = 0.3
+        phi[1][1][0] = 0.1
+        phi[1][0][1] = 0.1
+        phi[1][1][1] = 0.3
+    else:
+        raise ValueError("dim, orderを見直してください.")
 
     for item in phi:
         assert item.shape == (dim,dim)
@@ -94,6 +104,9 @@ def simulate_VAR(dim,order=1,steps=500):
         sigma2 = sigma[0][0].item()
         Theta = [(phi1 - phi1*phi2 - phi2*phi3)/sigma2, (phi2 - phi1*phi3)/sigma2, phi3/sigma2]
         Theta = np.array([Theta])
+    
+    Theta = [phi[p].T@np.linalg.inv(sigma) for p in range(order)]
+    Theta = np.concatenate(Theta)
     print("True Parameter (estimation target):", Theta.flatten())
     
     return var_data[:,0,:], Theta.flatten()
@@ -111,14 +124,10 @@ def MLE(Y, order):
     return results
     
 
-def run():
-    raw, true_parameter = simulate_VAR(dim=1,order=2,steps=1000)
+def run(dim, order):
+    raw, true_parameter = simulate_VAR(dim=dim,order=order,steps=1000)
     # sample_plot(raw)
     # print(raw)
-
-    #model parameters
-    dim = 1
-    order = 2
 
     def raw_to_dfs(rawdata):
         dfs = []
@@ -282,22 +291,22 @@ def run():
         return clf.w, end_fit-start_fit
 
     ### MLE for AR or VAR
-    # start_time = time()
-    # res_mle = MLE(raw, order=order)
-    # # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
+    start_time = time()
+    res_mle = MLE(raw, order=order)
+    # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
     # theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
-    # # theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
-    # # theta_hat = theta_hat.flatten() #VAR(1) case
-    # optimization_time = None
-    # end_time = time()
+    theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
+    theta_hat = theta_hat.flatten() #VAR(1) case
+    optimization_time = None
+    end_time = time()
 
     ## Besag's PMLE for any model
-    df = raw_to_dfs(raw)
-    start_time = time()
-    theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
-    # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
-    # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
-    end_time = time()
+    # df = raw_to_dfs(raw)
+    # start_time = time()
+    # theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
+    # # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
+    # # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
+    # end_time = time()
 
     #Result
     print("--- 推定するパラメタ数 --- ")
@@ -318,11 +327,17 @@ def run():
     return theta_hat, l2loss, comp_time
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="サンプルCLI")
+    parser.add_argument("--dim", type=int, help="データの次元")
+    parser.add_argument("--order", type=int, help="マルコフモデルの次数")
+    args = parser.parse_args()
+
     loss_list = []
     time_list = []
-    for r in range(1):
+    for r in range(30):
         print(f"Run {r}")
-        _, loss_, time_ = run()
+        _, loss_, time_ = run(args.dim, args.order)
         loss_list.append(loss_)
         time_list.append(time_)
 
