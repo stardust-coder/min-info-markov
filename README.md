@@ -13,7 +13,8 @@ This branch implements the minimum information Markov model for time series data
     - l175 defines the func_h `func_h = func_h_matrix`. Note that `func_h_naive` is very slow. Use equivalent accelerations `func_h_einsum` or `func_h_matrix(recommended)`.
 5. Run estimation.
 ```
-python run.py
+python run.py --dim 1 --order 1 --method pmle_sgd
+python run.py --dim 56 --order 1 --method pmle_fista  #for sparse estimation
 ```
 
 Note: The optimization procedure in PLE is in fact a standard logistic regression. The optimization method is a simple gradient descent with zero initialization and inverse time decayed learning rate.
@@ -47,6 +48,14 @@ python run_LFP_Spike.py
 ```
 
 ## How to cite
+
+Please consider citing the following preprint.
+
 ```
-Coming soon...
+@article{sukeda2026minimum,
+  title={Minimum information Markov model},
+  author={Sukeda, Issey and Sei, Tomonari},
+  journal={arXiv preprint arXiv:2601.06900},
+  year={2026}
+}
 ```

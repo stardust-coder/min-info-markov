@@ -28,7 +28,7 @@ def load_ecog(): #Not used
     raw = (raw-min_)/(max_-min_)
     return raw
 
-def simulate_VAR(dim,order,steps):
+def simulate_Gaussian_VAR(dim,order,steps):
     # np.random.seed(seed=32)
     #Model parameters
     phi = [0.5*np.identity(dim) for _ in range(order)]
@@ -45,7 +45,7 @@ def simulate_VAR(dim,order,steps):
         phi[0][1][0] = 0.1
         phi[0][0][1] = 0.1
         phi[0][1][1] = 0.5
-    elif (dim,order) == (2,1):
+    elif (dim,order) == (2,2):
         phi[0][0][0] = 0.5
         phi[0][1][0] = 0.1
         phi[0][0][1] = 0.1
@@ -108,8 +108,12 @@ def simulate_VAR(dim,order,steps):
     Theta = [phi[p].T@np.linalg.inv(sigma) for p in range(order)]
     Theta = np.concatenate(Theta)
     print("True Parameter (estimation target):", Theta.flatten())
-    
     return var_data[:,0,:], Theta.flatten()
+
+def simulate_t_VAR(dim,order,steps):
+    from student import sample_from_mininfo_markov
+    var_data, true_param = sample_from_mininfo_markov(steps)
+    return var_data, true_param.flatten()
 
 def MLE(Y, order):
     from statsmodels.tsa.api import VAR, ARIMA
@@ -124,8 +128,11 @@ def MLE(Y, order):
     return results
     
 
-def run(dim, order):
-    raw, true_parameter = simulate_VAR(dim=dim,order=order,steps=1000)
+def run(dim, order, method):
+    # raw, true_parameter = simulate_Gaussian_VAR(dim=dim,order=order,steps=1000)
+    # raw, true_parameter = simulate_t_VAR(dim=dim,order=order,steps=1000)
+    raw = pd.read_csv("data/stock.csv").values
+
     # sample_plot(raw)
     # print(raw)
 
@@ -177,36 +184,38 @@ def run(dim, order):
         return h_all
 
 
-    from besag import LogisticRegression
+    from besag2 import LogisticRegression
     def besag_PMLE(df,raw):
         n = len(raw)
+        assert n <= 1500
         X = np.zeros((int((n-2*order)*(n-2*order-1)/2),dim*dim*order))
         func_h = func_h_matrix
         base_h = func_h(df, dim, order)  # ← 固定値として1回だけ呼ぶ.
-        
+
         for i, (s, t) in enumerate(tqdm(combinations(range(order+1,n-order+1),2))):
             # print(i,"/", int((n-2*order)*(n-2*order-1)/2))
             raw_tmp = copy.deepcopy(raw)
             raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1].copy(),raw_tmp[s-1].copy()
             df_tmp = raw_to_dfs(raw_tmp)
             x_ = base_h-func_h(df_tmp,dim,order) # time bottleneck            
-            X[i] = x_.reshape(dim*dim*order,)        
+            X[i] = x_.reshape(dim*dim*order,)    
 
         y = np.ones(int((n-2*order)*(n-2*order-1)/2))
         print("Start Fitting ...")
         start_fit = time()
         
         #Basic Optimization
-        clf = LogisticRegression(eta=0.1,n_iter=1000)
+        clf = LogisticRegression(
+            eta=1.0,
+            n_iter=1000,
+            tol=1e-10,
+            grad_tol=1e-7,
+            l2=0.0,
+            fit_intercept=False,
+            line_search=True,
+            verbose=True,
+        )
         clf.fit(X, y, True)
-
-        #Advanced Optimization
-        # clf = LogisticRegression(eta=0.1,n_iter=10000)
-        # clf.fit(X, y, False)
-        # clf.eta, clf.n_iter = 0.01, 10000
-        # clf.fit_add(X, y, True)
-        # clf.eta, clf.n_iter = 0.001, 10000
-        # clf.fit_add(X, y, False)
         end_fit = time()
         print(f"Optimization took {end_fit-start_fit} seconds.")
         return clf.w, end_fit-start_fit
@@ -229,7 +238,7 @@ def run(dim, order):
             x_ = base_h - func_h_matrix(df_tmp, dim, order)
             x = x_.reshape(-1)
 
-            # y = 1 always
+            # Set y = 1 always in logistic regressor.
             pred = 1 / (1 + np.exp(-np.dot(w, x)))
             error = 1 - pred
             step = eta * error
@@ -289,30 +298,82 @@ def run(dim, order):
         end_fit = time()
         print(f"Optimization took {end_fit-start_fit} seconds.")
         return clf.w, end_fit-start_fit
+    
+    def besag_PMLE_fista(df, raw):
+        n = len(raw)
+        assert n <= 1500
 
-    ### MLE for AR or VAR
-    start_time = time()
-    res_mle = MLE(raw, order=order)
-    # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
-    # theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
-    theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
-    theta_hat = theta_hat.flatten() #VAR(1) case
-    optimization_time = None
-    end_time = time()
+        n_pairs = int((n - 2 * order) * (n - 2 * order - 1) / 2)
+        n_features = dim * dim * order
 
-    ## Besag's PMLE for any model
-    # df = raw_to_dfs(raw)
-    # start_time = time()
-    # theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)
-    # # theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
-    # # theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
-    # end_time = time()
+        X = np.zeros((n_pairs, n_features))
+        func_h = func_h_matrix
+        base_h = func_h(df, dim, order)  # fixed once
+
+        for i, (s, t) in enumerate(tqdm(combinations(range(order + 1, n - order + 1), 2))):
+            raw_tmp = copy.deepcopy(raw)
+            raw_tmp[s - 1], raw_tmp[t - 1] = raw_tmp[t - 1].copy(), raw_tmp[s - 1].copy()
+            df_tmp = raw_to_dfs(raw_tmp)
+            x_ = base_h - func_h(df_tmp, dim, order)
+            X[i] = x_.reshape(n_features,)
+
+        y = np.ones(n_pairs)
+
+        print("Start Fitting with FISTA ...")
+        start_fit = time()
+
+        from fista import LogisticRegressionFISTA
+        clf = LogisticRegressionFISTA(
+            eta=1.0,
+            n_iter=1000,
+            tol=1e-10,
+            grad_tol=1e-7,
+            l1=5e-1,                  # ← L1 regularization strength
+            fit_intercept=False,
+            line_search=True,
+            verbose=True,
+        )
+        clf.fit(X, y)
+
+        end_fit = time()
+        print(f"Optimization took {end_fit - start_fit} seconds.")
+        return clf.w, end_fit - start_fit
+
+    if method == "mle":
+        ### MLE for AR or VAR
+        start_time = time()
+        res_mle = MLE(raw, order=order)
+        # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
+        # theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
+        theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
+        theta_hat = theta_hat.flatten() #VAR(1) case
+        optimization_time = None
+        end_time = time()
+
+    elif "pmle" in method:
+        # Besag's PMLE for any model
+        df = raw_to_dfs(raw)
+        start_time = time()
+        if method == "pmle_sgd":
+            theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
+        elif method == "pmle_pair":
+            theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
+        elif method == "pmle_fista":
+            theta_hat, optimization_time = besag_PMLE_fista(df=df,raw=raw)  
+        else:
+            theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)    
+        end_time = time()
+    else:
+        raise ValueError("methodが指定されていません！")
 
     #Result
     print("--- 推定するパラメタ数 --- ")
     print(dim*dim*order)
     print("--- 推定値 --- ")
     print(theta_hat.T)
+    np.save("fista_l=5e-1",theta_hat)
+    print("#Non zero entries:", np.count_nonzero(theta_hat))
+    # import pdb; pdb.set_trace()
     
     # for simulated data
     print("--- 真値 --- ")
@@ -331,13 +392,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="サンプルCLI")
     parser.add_argument("--dim", type=int, help="データの次元")
     parser.add_argument("--order", type=int, help="マルコフモデルの次数")
+    parser.add_argument("--method", type=str, choices=["mle", "pmle", "pmle_sgd", "pmle_fista"], help="推定手法")
+
     args = parser.parse_args()
 
     loss_list = []
     time_list = []
-    for r in range(30):
+    for r in range(1):
         print(f"Run {r}")
-        _, loss_, time_ = run(args.dim, args.order)
+        _, loss_, time_ = run(args.dim, args.order, args.method)
         loss_list.append(loss_)
         time_list.append(time_)
 
@@ -345,4 +408,5 @@ if __name__ == "__main__":
     print("Average L2 error for 30 runs:", sum(loss_list)/len(loss_list))
     print("Standard error for 30 runs", stats.sem(loss_list))
     print("Average whole estimation time for 30 runs:",sum([t[0] for t in time_list])/len(time_list))
-    print("Average time consumed for gradient descent for 30 runs:",sum([t[1] for t in time_list])/len(time_list))
+    if args.method != "mle":
+        print("Average time consumed for gradient descent for 30 runs:",sum([t[1] for t in time_list])/len(time_list))

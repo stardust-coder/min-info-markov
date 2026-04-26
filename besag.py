@@ -17,7 +17,7 @@ class LogisticRegression(object):
             errors = y - p
 
             # 学習率減衰
-            eta_t = self.eta / (1 + 0.05 * it)
+            eta_t = self.eta #/ (1 + 0.05 * it)
 
             # 重み更新
             step = eta_t / m * (X.T @ errors)
@@ -32,6 +32,9 @@ class LogisticRegression(object):
             if abs(prev_loss - loss) < 1e-6:
                 if verbose:
                     print(f"Converged at iteration {it+1}")
+                grad = X.T @ (1 - 1 / (1 + np.exp(-(X @ self.w))))
+                print("grad norm =", np.linalg.norm(grad))
+                print("max abs grad =", np.max(np.abs(grad)))   
                 break
             prev_loss = loss
 
