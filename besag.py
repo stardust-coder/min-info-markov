@@ -84,6 +84,50 @@ class LogisticRegression(object):
         return loss
 
 
+def besag_PMLE_parallel(df,raw):
+    from joblib import Parallel, delayed
+    n = len(raw)
+    X = np.zeros((int((n-2)*(n-3)/2),dim*dim*order))
+    
+    def calc(v):
+        s,t = v[0],v[1]
+        raw_tmp = copy.deepcopy(raw)
+        raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1],raw_tmp[s-1]
+        df_tmp = raw_to_dfs(raw_tmp)    
+        x_ = func_h(df,dim,order)-func_h(df_tmp,dim,order)
+        return x_.T
+    
+    scores = Parallel(n_jobs=-1)(delayed(calc)(j) for j in combinations(range(2,n),2)) #use joblib.
+    X = np.concatenate(scores)
+    y = np.ones(X.shape[0])
+    print("Start Fitting ...")
+    start_fit = time()
+    clf = LogisticRegression(eta=1,n_iter=500).fit(X, y)
+    end_fit = time()
+    print(f"Optimization took {end_fit-start_fit} seconds.")
+    return clf.w, end_fit-start_fit
+
+def besag_PMLE_chen(df,raw):
+    n = len(raw)-2*order
+    X = np.zeros((int(n/2),dim*dim*order))
+    base_h = func_h_matrix(df, dim, order)  # ← 固定値として1回だけ呼ぶ
+    index_list_prep = [x+order+1 for x in list(range(n))]
+    random.shuffle(index_list_prep)
+    index_list = [item for item in zip(index_list_prep[:int(n/2)], index_list_prep[int(n/2):])]
+    for i, (s, t) in enumerate(tqdm(index_list)):
+        raw_tmp = copy.deepcopy(raw)
+        raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1].copy(),raw_tmp[s-1].copy()
+        df_tmp = raw_to_dfs(raw_tmp)
+        x_ = base_h-func_h_matrix(df_tmp,dim,order) # time bottleneck      
+        X[i] = x_.reshape(dim*dim*order,)
+
+    y = np.ones(int(n/2))
+    print("Start Fitting ...")
+    start_fit = time()
+    clf = LogisticRegression(eta=1,n_iter=500).fit(X, y)
+    end_fit = time()
+    print(f"Optimization took {end_fit-start_fit} seconds.")
+    return clf.w, end_fit-start_fit
 
 
 if __name__ == "__main__":

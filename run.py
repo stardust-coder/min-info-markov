@@ -1,4 +1,5 @@
 import numpy as np
+from numpy import cos, atan, sin
 import matplotlib.pyplot as plt
 import statsmodels.graphics.api as smg
 from statsmodels.graphics.tsaplots import plot_acf
@@ -6,6 +7,7 @@ from time import time
 from tqdm import tqdm
 import pandas as pd
 import random
+from random import sample
 import pdb
 from itertools import combinations
 import copy
@@ -179,18 +181,19 @@ def run(dim, order, method):
             xt = df[:, :, -1].T
             xtj = df[:, :, -1 - j].T
             # 各時点のベクトル外積の総和：einsumでテンソル生成せずに行列積にする
-            h_j = xt.T @ xtj  # shape: (dim, dim)
+            h_j = (xt).T @ (xtj)  # shape: (dim, dim)
             h_all[(j - 1) * dim * dim : j * dim * dim, 0] = h_j.ravel()   
         return h_all
-
-
-    from besag2 import LogisticRegression
+    
     def besag_PMLE(df,raw):
         n = len(raw)
         assert n <= 1500
-        X = np.zeros((int((n-2*order)*(n-2*order-1)/2),dim*dim*order))
-        func_h = func_h_matrix
-        base_h = func_h(df, dim, order)  # ← 固定値として1回だけ呼ぶ.
+
+        n_pairs = int((n - 2 * order) * (n - 2 * order - 1) / 2)
+        n_features = dim * dim * order
+        func_h = func_h_matrix #論文でいうK
+        X = np.zeros((n_pairs, n_features))
+        base_h = func_h(df, dim, order)  # fixed once
 
         for i, (s, t) in enumerate(tqdm(combinations(range(order+1,n-order+1),2))):
             # print(i,"/", int((n-2*order)*(n-2*order-1)/2))
@@ -198,13 +201,14 @@ def run(dim, order, method):
             raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1].copy(),raw_tmp[s-1].copy()
             df_tmp = raw_to_dfs(raw_tmp)
             x_ = base_h-func_h(df_tmp,dim,order) # time bottleneck            
-            X[i] = x_.reshape(dim*dim*order,)    
+            X[i] = x_.reshape(n_features,)    
 
         y = np.ones(int((n-2*order)*(n-2*order-1)/2))
         print("Start Fitting ...")
         start_fit = time()
         
         #Basic Optimization
+        from besag2 import LogisticRegression
         clf = LogisticRegression(
             eta=1.0,
             n_iter=1000,
@@ -221,7 +225,6 @@ def run(dim, order, method):
         return clf.w, end_fit-start_fit
 
     def besag_PMLE_online_SGD(df, raw, eta=0.01, n_iter=10000):
-        from random import sample
         n = len(raw)
         base_h = func_h_matrix(df, dim, order)
         w = np.zeros(dim * dim * order)
@@ -254,60 +257,14 @@ def run(dim, order, method):
         return w, end_fit-start_fit
 
 
-    def besag_PMLE_parallel(df,raw):
-        from joblib import Parallel, delayed
-        n = len(raw)
-        X = np.zeros((int((n-2)*(n-3)/2),dim*dim*order))
-        
-        def calc(v):
-            s,t = v[0],v[1]
-            raw_tmp = copy.deepcopy(raw)
-            raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1],raw_tmp[s-1]
-            df_tmp = raw_to_dfs(raw_tmp)    
-            x_ = func_h(df,dim,order)-func_h(df_tmp,dim,order)
-            return x_.T
-        
-        scores = Parallel(n_jobs=-1)(delayed(calc)(j) for j in combinations(range(2,n),2)) #use joblib.
-        X = np.concatenate(scores)
-        y = np.ones(X.shape[0])
-        print("Start Fitting ...")
-        start_fit = time()
-        clf = LogisticRegression(eta=1,n_iter=500).fit(X, y)
-        end_fit = time()
-        print(f"Optimization took {end_fit-start_fit} seconds.")
-        return clf.w, end_fit-start_fit
-
-    def besag_PMLE_chen(df,raw):
-        n = len(raw)-2*order
-        X = np.zeros((int(n/2),dim*dim*order))
-        base_h = func_h_matrix(df, dim, order)  # ← 固定値として1回だけ呼ぶ
-        index_list_prep = [x+order+1 for x in list(range(n))]
-        random.shuffle(index_list_prep)
-        index_list = [item for item in zip(index_list_prep[:int(n/2)], index_list_prep[int(n/2):])]
-        for i, (s, t) in enumerate(tqdm(index_list)):
-            raw_tmp = copy.deepcopy(raw)
-            raw_tmp[s-1],raw_tmp[t-1] = raw_tmp[t-1].copy(),raw_tmp[s-1].copy()
-            df_tmp = raw_to_dfs(raw_tmp)
-            x_ = base_h-func_h_matrix(df_tmp,dim,order) # time bottleneck      
-            X[i] = x_.reshape(dim*dim*order,)
-
-        y = np.ones(int(n/2))
-        print("Start Fitting ...")
-        start_fit = time()
-        clf = LogisticRegression(eta=1,n_iter=500).fit(X, y)
-        end_fit = time()
-        print(f"Optimization took {end_fit-start_fit} seconds.")
-        return clf.w, end_fit-start_fit
-    
-    def besag_PMLE_fista(df, raw):
+    def besag_PMLE_fista(df, raw, group_lasso=False, L1_=1):
         n = len(raw)
         assert n <= 1500
 
         n_pairs = int((n - 2 * order) * (n - 2 * order - 1) / 2)
-        n_features = dim * dim * order
-
+        n_features = dim * dim * order * 4
+        func_h = func_h_matrix #論文でいうK
         X = np.zeros((n_pairs, n_features))
-        func_h = func_h_matrix
         base_h = func_h(df, dim, order)  # fixed once
 
         for i, (s, t) in enumerate(tqdm(combinations(range(order + 1, n - order + 1), 2))):
@@ -323,21 +280,33 @@ def run(dim, order, method):
         start_fit = time()
 
         from fista import LogisticRegressionFISTA
+        # L1_ = 6  # ← L1 regularization strength
         clf = LogisticRegressionFISTA(
             eta=1.0,
             n_iter=1000,
             tol=1e-10,
             grad_tol=1e-7,
-            l1=5e-1,                  # ← L1 regularization strength
+            l1=L1_,                 
             fit_intercept=False,
             line_search=True,
             verbose=True,
         )
-        clf.fit(X, y)
+        if group_lasso:
+            clf.groups = np.arange(n_features).reshape(-1, 4)
+            print("Groups:", clf.groups)
+        clf.fit(X, y, is_group=group_lasso)
 
         end_fit = time()
         print(f"Optimization took {end_fit - start_fit} seconds.")
-        return clf.w, end_fit - start_fit
+        return clf.w, end_fit - start_fit, L1_
+    
+    def print_result(theta_hat, npy_name):
+        print("--- 推定するパラメタ数 --- ")
+        print(len(theta_hat))
+        print("--- 推定値 --- ")
+        print(theta_hat.T)
+        np.save(npy_name,theta_hat)
+        print("#Non zero entries:", np.count_nonzero(theta_hat))
 
     if method == "mle":
         ### MLE for AR or VAR
@@ -358,22 +327,25 @@ def run(dim, order, method):
             theta_hat, optimization_time = besag_PMLE_online_SGD(df=df,raw=raw)
         elif method == "pmle_pair":
             theta_hat, optimization_time = besag_PMLE_chen(df=df,raw=raw)
-        elif method == "pmle_fista":
-            theta_hat, optimization_time = besag_PMLE_fista(df=df,raw=raw)  
+        elif method == "pmle_grouplasso":
+            for l in np.logspace(-2, 1, 5):
+                theta_hat, optimization_time, L1_ = besag_PMLE_fista(df=df,raw=raw, L1_=l, group_lasso=True)  
+                npy_name = f"theta_hat_l1={L1_:.4f}_edge={int(np.count_nonzero(theta_hat)/4)}"
+                print("L1 regularization with λ=",l)
+                print_result(theta_hat, npy_name)
+        elif method == "pmle_lasso":
+            for l in np.logspace(-2, 1, 5):
+                theta_hat, optimization_time, L1_ = besag_PMLE_fista(df=df,raw=raw, L1_=l)  
+                npy_name = f"theta_hat_l1={L1_:.4f}_edge={np.count_nonzero(theta_hat)}"
+                print("L1 regularization with λ=",l)
+                print_result(theta_hat, npy_name)
         else:
             theta_hat, optimization_time = besag_PMLE(df=df,raw=raw)    
         end_time = time()
     else:
         raise ValueError("methodが指定されていません！")
 
-    #Result
-    print("--- 推定するパラメタ数 --- ")
-    print(dim*dim*order)
-    print("--- 推定値 --- ")
-    print(theta_hat.T)
-    np.save("fista_l=5e-1",theta_hat)
-    print("#Non zero entries:", np.count_nonzero(theta_hat))
-    # import pdb; pdb.set_trace()
+    print_result(theta_hat, npy_name)
     
     # for simulated data
     print("--- 真値 --- ")
@@ -387,12 +359,13 @@ def run(dim, order, method):
     print(comp_time)
     return theta_hat, l2loss, comp_time
 
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="サンプルCLI")
     parser.add_argument("--dim", type=int, help="データの次元")
     parser.add_argument("--order", type=int, help="マルコフモデルの次数")
-    parser.add_argument("--method", type=str, choices=["mle", "pmle", "pmle_sgd", "pmle_fista"], help="推定手法")
+    parser.add_argument("--method", type=str, choices=["mle", "pmle", "pmle_sgd", "pmle_lasso", "pmle_grouplasso"], help="推定手法")
 
     args = parser.parse_args()
 

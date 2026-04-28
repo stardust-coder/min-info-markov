@@ -10,6 +10,20 @@ def soft_threshold(x: np.ndarray, thresh: float) -> np.ndarray:
     """Prox for L1 norm."""
     return np.sign(x) * np.maximum(np.abs(x) - thresh, 0.0)
 
+def group_soft_threshold(theta, groups, thresh):
+    theta_new = theta.copy()
+
+    for g in groups:
+        v = theta[g]
+        norm = np.linalg.norm(v, 2)
+
+        if norm == 0:
+            continue
+
+        factor = max(0.0, 1 - thresh / norm)
+        theta_new[g] = factor * v
+
+    return theta_new
 
 class LogisticRegressionFISTA:
     """
@@ -67,6 +81,7 @@ class LogisticRegressionFISTA:
         self.objective_history_ = []
         self.n_iter_ = 0
         self.converged_ = False
+        self.groups = None
 
     @staticmethod
     def _sigmoid(z: np.ndarray) -> np.ndarray:
@@ -147,6 +162,19 @@ class LogisticRegressionFISTA:
             b_new = theta[-1]
             return np.concatenate([w_new, np.array([b_new])])
         return soft_threshold(theta, step * self.l1)
+    
+    def _group_prox(self, theta: np.ndarray, step: float) -> np.ndarray:
+        thresh = step * self.l1
+        print("thresh = ", thresh)
+        if self.fit_intercept:
+            w = theta[:-1]
+            b = theta[-1]
+
+            w_new = group_soft_threshold(w, self.groups, thresh)
+
+            return np.concatenate([w_new, np.array([b])])
+
+        return group_soft_threshold(theta, self.groups, thresh)
 
     def _quadratic_upper_bound(
         self,
@@ -164,7 +192,7 @@ class LogisticRegressionFISTA:
             + 0.5 / step * np.dot(diff, diff)
         )
 
-    def fit(self, X: np.ndarray, y: np.ndarray, *_args, **_kwargs):
+    def fit(self, X: np.ndarray, y: np.ndarray, is_group=False, *_args, **_kwargs):
         X = np.asarray(X, dtype=float)
         y = self._prepare_labels(y)
 
@@ -187,7 +215,10 @@ class LogisticRegressionFISTA:
                 smooth_yk = self._smooth_loss(X, y, yk)
 
                 while True:
-                    x_next = self._prox(yk - step_local * grad_yk, step_local)
+                    if is_group:
+                        x_next = self._group_prox(yk - step_local * grad_yk, step_local)
+                    else:
+                        x_next = self._prox(yk - step_local * grad_yk, step_local)
                     lhs = self._smooth_loss(X, y, x_next)
                     rhs = self._quadratic_upper_bound(X, y, x_next, yk, grad_yk, step_local)
 
@@ -199,7 +230,10 @@ class LogisticRegressionFISTA:
                         step = step_local
                         break
             else:
-                x_next = self._prox(yk - step * grad_yk, step)
+                if is_group:
+                    x_next = self._group_prox(yk - step * grad_yk, step)
+                else:
+                    x_next = self._prox(yk - step * grad_yk, step)
 
             # FISTA momentum update
             t_next = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * tk * tk))
