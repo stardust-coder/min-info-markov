@@ -1,7 +1,7 @@
 import copy
 from itertools import combinations
 from time import time
-
+from typing import Optional
 import numpy as np
 from tqdm import tqdm
 
@@ -31,7 +31,10 @@ class LogisticRegressionFISTA:
 
     Objective:
         minimize_w
-            (1/n) * sum_i log(1 + exp(-y_i * x_i^T w)) + l1 * ||w||_1
+            sum_i log(1 + exp(-y_i * x_i^T w)) + l1 * penalty(w)
+
+        penalty(w) = ||w||_1 for lasso
+        penalty(w) = sum_g ||w_g||_2 for group lasso
 
     where y in {-1, +1} ideally.
     If y is in {0, 1}, it is internally converted to {-1, +1}.
@@ -42,10 +45,8 @@ class LogisticRegressionFISTA:
         Initial step size for backtracking.
     n_iter : int, default=1000
         Maximum number of FISTA iterations.
-    tol : float, default=1e-10
+    tol : float, default=1e-6
         Tolerance on objective decrease / iterate change.
-    grad_tol : float, default=1e-7
-        Tolerance on gradient mapping norm.
     l1 : float, default=1.0
         L1 regularization strength.
     fit_intercept : bool, default=False
@@ -60,21 +61,21 @@ class LogisticRegressionFISTA:
         self,
         eta: float = 1.0,
         n_iter: int = 1000,
-        tol: float = 1e-10,
-        grad_tol: float = 1e-7,
+        tol: float = 1e-6,
         l1: float = 1.0,
         fit_intercept: bool = False,
         line_search: bool = True,
         verbose: bool = False,
+        init_w: Optional[bool] = None,
     ):
         self.eta = eta
         self.n_iter = n_iter
         self.tol = tol
-        self.grad_tol = grad_tol
         self.l1 = l1
         self.fit_intercept = fit_intercept
         self.line_search = line_search
         self.verbose = verbose
+        self.init_w = init_w
 
         self.w = None
         self.b = 0.0
@@ -126,29 +127,45 @@ class LogisticRegressionFISTA:
         return X @ w + b
 
     def _smooth_loss(self, X: np.ndarray, y: np.ndarray, theta: np.ndarray) -> float:
+        """Sum logistic loss: sum_i log(1 + exp(-y_i * x_i^T theta))."""
         z = self._decision_function(X, theta)
         yz = y * z
-        return np.mean(self._log1pexp(-yz))
+        return np.sum(self._log1pexp(-yz))
 
-    def _full_objective(self, X: np.ndarray, y: np.ndarray, theta: np.ndarray) -> float:
+    def _penalty(self, theta: np.ndarray, is_group: bool = False) -> float:
+        """Regularization penalty matching the prox used in fit()."""
         w, _ = self._split_params(theta)
-        return self._smooth_loss(X, y, theta) + self.l1 * np.sum(np.abs(w))
+
+        if is_group:
+            if self.groups is None:
+                raise ValueError("groups must be set before fitting with is_group=True.")
+            return sum(np.linalg.norm(w[g], 2) for g in self.groups)
+
+        return np.sum(np.abs(w))
+
+    def _full_objective(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        theta: np.ndarray,
+        is_group: bool = False,
+    ) -> float:
+        return self._smooth_loss(X, y, theta) + self.l1 * self._penalty(theta, is_group=is_group)
 
     def _smooth_grad(self, X: np.ndarray, y: np.ndarray, theta: np.ndarray) -> np.ndarray:
         """
         grad of smooth part:
-            (1/n) sum log(1 + exp(-y_i z_i))
+            sum_i log(1 + exp(-y_i z_i))
         """
-        n = X.shape[0]
         z = self._decision_function(X, theta)
         yz = y * z
 
         # derivative wrt z: -y / (1 + exp(y z)) = -y * sigmoid(-y z)
         coeff = -y * self._sigmoid(-yz)  # shape (n,)
-        grad_w = (X.T @ coeff) / n
+        grad_w = X.T @ coeff
 
         if self.fit_intercept:
-            grad_b = np.sum(coeff) / n
+            grad_b = np.sum(coeff)
             return np.concatenate([grad_w, np.array([grad_b])])
         return grad_w
 
@@ -165,7 +182,7 @@ class LogisticRegressionFISTA:
     
     def _group_prox(self, theta: np.ndarray, step: float) -> np.ndarray:
         thresh = step * self.l1
-        print("thresh = ", thresh)
+        
         if self.fit_intercept:
             w = theta[:-1]
             b = theta[-1]
@@ -193,25 +210,32 @@ class LogisticRegressionFISTA:
         )
 
     def fit(self, X: np.ndarray, y: np.ndarray, is_group=False, *_args, **_kwargs):
+        self.converged_ = False
+        self.n_iter_ = 0
         X = np.asarray(X, dtype=float)
         y = self._prepare_labels(y)
+        L = 0.25 * np.linalg.eigvalsh(X.T @ X).max()
+        self.eta = 1.0 / L
+        step = self.eta
 
         n_samples, n_features = X.shape
         dim = n_features + int(self.fit_intercept)
 
-        xk = np.zeros(dim, dtype=float)
+        if self.init_w is None:
+            xk = np.zeros(dim, dtype=float)
+        else:
+            xk = self.init_w.copy()
         yk = xk.copy()
         tk = 1.0
-        step = self.eta
 
-        obj_prev = self._full_objective(X, y, xk)
+        obj_prev = self._full_objective(X, y, xk, is_group=is_group)
         self.objective_history_ = [obj_prev]
 
         for it in range(1, self.n_iter + 1):
             grad_yk = self._smooth_grad(X, y, yk)
 
             if self.line_search:
-                step_local = step
+                step_local = min(step * 2.0, self.eta)
                 smooth_yk = self._smooth_loss(X, y, yk)
 
                 while True:
@@ -235,11 +259,42 @@ class LogisticRegressionFISTA:
                 else:
                     x_next = self._prox(yk - step * grad_yk, step)
 
-            # FISTA momentum update
             t_next = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * tk * tk))
             y_next = x_next + ((tk - 1.0) / t_next) * (x_next - xk)
+            
+            # #ISTAの場合（予備）
+            # t_next = 1.0
+            # y_next = x_next.copy()
+            
 
-            obj = self._full_objective(X, y, x_next)
+            obj = self._full_objective(X, y, x_next, is_group=is_group)
+
+            if obj > obj_prev:
+                grad_xk = self._smooth_grad(X, y, xk)
+                step_local = min(step * 2.0, self.eta)
+
+                while True:
+                    if is_group:
+                        x_next = self._group_prox(xk - step_local * grad_xk, step_local)
+                    else:
+                        x_next = self._prox(xk - step_local * grad_xk, step_local)
+
+                    lhs = self._smooth_loss(X, y, x_next)
+                    rhs = self._quadratic_upper_bound(X, y, x_next, xk, grad_xk, step_local)
+
+                    if lhs <= rhs + 1e-14:
+                        step = step_local
+                        break
+
+                    step_local *= 0.5
+                    if step_local < 1e-20:
+                        step = step_local
+                        break
+
+                t_next = 1.0
+                y_next = x_next.copy()
+                obj = self._full_objective(X, y, x_next, is_group=is_group)
+
             self.objective_history_.append(obj)
 
             # gradient mapping norm
@@ -249,16 +304,17 @@ class LogisticRegressionFISTA:
             # stopping checks
             rel_obj = abs(obj_prev - obj) / max(1.0, abs(obj_prev))
             step_norm = np.linalg.norm(x_next - xk)
+            rel_step = step_norm / max(1.0, np.linalg.norm(xk))
 
             if self.verbose and (it == 1 or it % 10 == 0):
                 nnz = np.count_nonzero(np.abs(self._split_params(x_next)[0]) > 0)
                 print(
                     f"[FISTA] iter={it:4d}  obj={obj:.12e}  "
-                    f"rel_obj={rel_obj:.3e}  step_norm={step_norm:.3e}  "
-                    f"grad_map={grad_map_norm:.3e}  nnz={nnz}"
+                    f"rel_obj={rel_obj:.3e}  step={step:.3e}  "
+                    f"step_norm={step_norm:.3e}  grad_map={grad_map_norm:.3e}  nnz={nnz}"
                 )
 
-            if rel_obj < self.tol or step_norm < self.tol or grad_map_norm < self.grad_tol:
+            if rel_obj < self.tol or rel_step < self.tol*10:
                 xk = x_next
                 self.converged_ = True
                 self.n_iter_ = it
@@ -273,6 +329,7 @@ class LogisticRegressionFISTA:
         w, b = self._split_params(xk)
         self.w = w
         self.b = b
+        print("Is converged? ... ", self.converged_)
         return self
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:

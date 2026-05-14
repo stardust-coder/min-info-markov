@@ -6,5 +6,7 @@ output
 notebook
 __pycache__
 *.log
+*.csv
+*.png
 .DS_Store
-.csv
+

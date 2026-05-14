@@ -1,51 +1,54 @@
-# Minimum information Markov model
+# Minimum information Markov model for EEG data analysis
 
-This branch implements the minimum information Markov model for time series data.
+Minimum information Markov model is suitable for EEG connectivity estimation for three reasons:
+- temporal dependence
+- any domain (phase, amplitude etc.)
+- unified estimation framework
 
-## Basic Usage
-1. Set data. (l96~98)
-    - Use simulation data from AR processes if needed.
-2. Set model parameters. (l99~100)
-3. Choose estimation method (l255~271)
-    - For AR models, you may compare with MLE.
-    - We recommend PLE (default).
-4. Set func_h used in PLE.
-    - l175 defines the func_h `func_h = func_h_matrix`. Note that `func_h_naive` is very slow. Use equivalent accelerations `func_h_einsum` or `func_h_matrix(recommended)`.
-5. Run estimation.
+## Components
+
+- Minimum information Markov model 
+- GroupLASSO/Sparse estimation/Parallel computation
+- FISTA 
+- SGD (coming soon...) 
+- Automatic model selection with information criteria (coming soon...) 
+- Graphical analysis (coming soon...) 
+
+## Example Usage
+
+### Phase-phase connectivity
+1. Set dependence functions.
+
+`torus_pair_feature()` function defines a set of suitable dependences for phase-phase connectivity analysis.
+
+
+2. Run estimation.
+
+For 5 dimensional data
 ```
-python run.py --dim 1 --order 1 --method pmle_sgd
-python run.py --dim 56 --order 1 --method pmle_fista  #for sparse estimation
-```
-
-Note: The optimization procedure in PLE is in fact a standard logistic regression. The optimization method is a simple gradient descent with zero initialization and inverse time decayed learning rate.
-
-
-## Simple example on univariate binary spike train data
-
-This code is currently used only for plotting the data.
-```
-python run_spike.py
-```
-
-
-## Simple example on univariate LFP data
-
-For each of ch1 ~ ch96, this code performs PLE with the dependence function
-$$h(x,y) = (xy, x^2y, xy^2)^\top,$$
-which is defined as "func_h_v2" in the code.
-```
-python run_LFP.py
+python run_PPC.py --dim 5 --order 1 --method pmle_grouplasso
 ```
 
-## Cross domain analysis of LFP and spike trains
+### Phase-amplitude coupling
 
-1. (l247) Set prepare = True for your initial run. After you have parallel.csv, set prepare = False.
-2. (l257) Set unit (= electrode channel).
-3. (l76~l93) Determine the dependence function "func_h", which will be defined by "func_h_custom" and $K$. 
-4. Run estimation.
+1. Set dependence functions.
+
+2. Run estimation.
+
+For 2 dimensional data
 ```
-python run_LFP_Spike.py
+python run_PAC.py --dim 2 --order 1 --method pmle_fista
 ```
+
+
+## Simulation dataset
+
+`data.py` contains Kuramoto model with structured coefficient matrix $K$. 
+
+## Real dataset
+
+Coming soon...
+
 
 ## How to cite
 
