@@ -175,7 +175,7 @@ def run(dim, order, method):
     # Main: Besag PMLE with FISTA
     # ============================================================
 
-    def besag_PMLE_fista(raw, order, group_lasso=False, n_iter=10000, L1_=0, X=None, ic=False, init=None):
+    def besag_PMLE_fista(raw, order, group_lasso=False, n_iter=1000, L1_=0, X=None, ic=False, init=None):
         """
         Besag PMLE を logistic regression として解く FISTA 版。
 
@@ -198,12 +198,9 @@ def run(dim, order, method):
         n_pairs, n_features = X.shape
         y = np.ones(n_pairs, dtype=np.float32)
 
-
-
         from fista import LogisticRegressionFISTA
-
         clf = LogisticRegressionFISTA(
-            eta=1.0,
+            eta=None,
             n_iter=n_iter,
             tol=1e-6,
             l1=L1_,
@@ -404,7 +401,7 @@ def run(dim, order, method):
                 num_edge = candidate["num_edge"]
 
                 X_sub = X[:, nonzero_mask] if len(nonzero_mask) > 0 else X[:, []]
-
+                init_refit = np.asarray(candidate["theta_hat_lasso"])[nonzero_mask]
                 theta_refit, is_converged_refit, _, plic, res = besag_PMLE_fista(
                     raw=raw,
                     order=order,
@@ -412,7 +409,7 @@ def run(dim, order, method):
                     group_lasso=False,
                     X=X_sub,
                     ic=True,
-                    init=None,
+                    init=init_refit,
                 )
 
                 ll = res[0]
@@ -457,7 +454,7 @@ def run(dim, order, method):
 
             def run_grid(ls, offset=0, use_parallel=True):
                 if use_parallel:
-                    path_results = Parallel(n_jobs=-1)(
+                    path_results = Parallel(n_jobs=10, backend="loky", max_nbytes="100M")(
                         delayed(fit_lasso_path)(offset + i, lam)
                         for i, lam in enumerate(ls)
                     )
@@ -486,7 +483,7 @@ def run(dim, order, method):
             use_parallel = True
 
             # 1st stage: coarse search
-            ls1 = np.logspace(3.5, 0, 25)
+            ls1 = np.logspace(3.5, 0, 10)/ X.shape[0]
             scored1 = run_grid(ls1, offset=0, use_parallel=use_parallel)
 
             best1 = min(scored1, key=lambda d: d["plic"])
@@ -506,7 +503,7 @@ def run(dim, order, method):
             ls2 = np.logspace(
                 log_best + 0.5,
                 log_best - 0.5,
-                25,
+                10,
             )
 
             scored2 = run_grid(ls2, offset=len(scored1), use_parallel=use_parallel)
@@ -551,7 +548,7 @@ def run(dim, order, method):
                 )
 
         elif method == "pmle_lasso":
-            for l in np.logspace(-3, 1, 5):
+            for l in np.logspace(3.5, 0, 25)/ X.shape[0]:
                 theta_hat, is_converged, L1_ = besag_PMLE_fista(raw=raw, order=order, L1_=l)  
                 npy_name = f"theta_hat_l1={L1_:.4f}_edge={np.count_nonzero(theta_hat)}_{is_converged}"
                 print("L1 regularization with λ=",l)

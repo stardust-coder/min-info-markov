@@ -138,7 +138,7 @@ def Kuramoto_Model(N, seed=None, verbose=False):
     print("K in Kuramoto model:")
     print(K)
 
-    T = 15
+    T = 10
     dt = 0.01
     steps = int(T / dt)
     print("#Time steps:", steps)

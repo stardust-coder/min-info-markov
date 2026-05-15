@@ -10,6 +10,7 @@ def soft_threshold(x: np.ndarray, thresh: float) -> np.ndarray:
     """Prox for L1 norm."""
     return np.sign(x) * np.maximum(np.abs(x) - thresh, 0.0)
 
+
 def group_soft_threshold(theta, groups, thresh):
     theta_new = theta.copy()
 
@@ -25,13 +26,14 @@ def group_soft_threshold(theta, groups, thresh):
 
     return theta_new
 
+
 class LogisticRegressionFISTA:
     """
     L1-regularized logistic regression by FISTA.
 
     Objective:
         minimize_w
-            sum_i log(1 + exp(-y_i * x_i^T w)) + l1 * penalty(w)
+            mean_i log(1 + exp(-y_i * x_i^T w)) + l1 * penalty(w)
 
         penalty(w) = ||w||_1 for lasso
         penalty(w) = sum_g ||w_g||_2 for group lasso
@@ -39,34 +41,58 @@ class LogisticRegressionFISTA:
     where y in {-1, +1} ideally.
     If y is in {0, 1}, it is internally converted to {-1, +1}.
 
+    Important
+    ---------
+    This version uses MEAN logistic loss, not SUM logistic loss.
+
+    If your previous code used the objective
+
+        sum_i logistic_loss_i + l1_sum * penalty(w)
+
+    then the equivalent mean-loss regularization is
+
+        l1_mean = l1_sum / n_samples
+
+    because
+
+        sum_loss + l1_sum * penalty
+        = n_samples * (mean_loss + (l1_sum / n_samples) * penalty)
+
     Parameters
     ----------
-    eta : float, default=1.0
-        Initial step size for backtracking.
+    eta : float or None, default=None
+        Initial/max step size for backtracking. If None, fit() computes
+        eta = 1 / L, where L is a Lipschitz upper bound for the gradient
+        of the MEAN logistic loss.
+        If a positive float is supplied, it is used as the max backtracking
+        step size.
     n_iter : int, default=1000
         Maximum number of FISTA iterations.
     tol : float, default=1e-6
         Tolerance on objective decrease / iterate change.
     l1 : float, default=1.0
-        L1 regularization strength.
+        L1 regularization strength for the MEAN-loss objective.
     fit_intercept : bool, default=False
         Whether to fit intercept. If True, intercept is NOT regularized.
     line_search : bool, default=True
         Whether to use backtracking line search.
     verbose : bool, default=False
         Whether to print optimization progress.
+    init_w : Optional[np.ndarray], default=None
+        Initial parameter. If fit_intercept=True, pass an array of length
+        n_features + 1, with intercept last.
     """
 
     def __init__(
         self,
-        eta: float = 1.0,
+        eta: Optional[float] = None,
         n_iter: int = 1000,
         tol: float = 1e-6,
         l1: float = 1.0,
         fit_intercept: bool = False,
         line_search: bool = True,
         verbose: bool = False,
-        init_w: Optional[bool] = None,
+        init_w: Optional[np.ndarray] = None,
     ):
         self.eta = eta
         self.n_iter = n_iter
@@ -83,6 +109,11 @@ class LogisticRegressionFISTA:
         self.n_iter_ = 0
         self.converged_ = False
         self.groups = None
+
+        # Diagnostics
+        self.L_ = None
+        self.final_step_ = None
+        self.max_step_ = None
 
     @staticmethod
     def _sigmoid(z: np.ndarray) -> np.ndarray:
@@ -127,10 +158,10 @@ class LogisticRegressionFISTA:
         return X @ w + b
 
     def _smooth_loss(self, X: np.ndarray, y: np.ndarray, theta: np.ndarray) -> float:
-        """Sum logistic loss: sum_i log(1 + exp(-y_i * x_i^T theta))."""
+        """Mean logistic loss: mean_i log(1 + exp(-y_i * x_i^T theta))."""
         z = self._decision_function(X, theta)
         yz = y * z
-        return np.sum(self._log1pexp(-yz))
+        return float(np.mean(self._log1pexp(-yz)))
 
     def _penalty(self, theta: np.ndarray, is_group: bool = False) -> float:
         """Regularization penalty matching the prox used in fit()."""
@@ -139,9 +170,9 @@ class LogisticRegressionFISTA:
         if is_group:
             if self.groups is None:
                 raise ValueError("groups must be set before fitting with is_group=True.")
-            return sum(np.linalg.norm(w[g], 2) for g in self.groups)
+            return float(sum(np.linalg.norm(w[g], 2) for g in self.groups))
 
-        return np.sum(np.abs(w))
+        return float(np.sum(np.abs(w)))
 
     def _full_objective(
         self,
@@ -154,14 +185,16 @@ class LogisticRegressionFISTA:
 
     def _smooth_grad(self, X: np.ndarray, y: np.ndarray, theta: np.ndarray) -> np.ndarray:
         """
-        grad of smooth part:
-            sum_i log(1 + exp(-y_i z_i))
+        Gradient of the smooth part:
+            mean_i log(1 + exp(-y_i z_i))
         """
+        n_samples = X.shape[0]
         z = self._decision_function(X, theta)
         yz = y * z
 
-        # derivative wrt z: -y / (1 + exp(y z)) = -y * sigmoid(-y z)
-        coeff = -y * self._sigmoid(-yz)  # shape (n,)
+        # derivative wrt z_i: -y_i / (1 + exp(y_i z_i))
+        # For mean loss, divide by n_samples.
+        coeff = -y * self._sigmoid(-yz) / n_samples  # shape (n,)
         grad_w = X.T @ coeff
 
         if self.fit_intercept:
@@ -179,10 +212,10 @@ class LogisticRegressionFISTA:
             b_new = theta[-1]
             return np.concatenate([w_new, np.array([b_new])])
         return soft_threshold(theta, step * self.l1)
-    
+
     def _group_prox(self, theta: np.ndarray, step: float) -> np.ndarray:
         thresh = step * self.l1
-        
+
         if self.fit_intercept:
             w = theta[:-1]
             b = theta[-1]
@@ -209,14 +242,31 @@ class LogisticRegressionFISTA:
             + 0.5 / step * np.dot(diff, diff)
         )
 
+    def _compute_lipschitz(self, X: np.ndarray) -> float:
+        """Lipschitz upper bound for gradient of MEAN logistic loss."""
+        n_samples = X.shape[0]
+
+        if self.fit_intercept:
+            X_aug = np.column_stack([X, np.ones(n_samples)])
+        else:
+            X_aug = X
+
+        # For logistic loss, max sigmoid'(z) <= 1/4.
+        # Mean loss divides the Hessian by n_samples.
+        eigmax = np.linalg.eigvalsh(X_aug.T @ X_aug).max()
+        L = 0.25 * eigmax / n_samples
+
+        if not np.isfinite(L) or L <= 0.0:
+            L = 1.0
+
+        return float(L)
+
     def fit(self, X: np.ndarray, y: np.ndarray, is_group=False, *_args, **_kwargs):
         self.converged_ = False
         self.n_iter_ = 0
+
         X = np.asarray(X, dtype=float)
         y = self._prepare_labels(y)
-        L = 0.25 * np.linalg.eigvalsh(X.T @ X).max()
-        self.eta = 1.0 / L
-        step = self.eta
 
         n_samples, n_features = X.shape
         dim = n_features + int(self.fit_intercept)
@@ -224,7 +274,27 @@ class LogisticRegressionFISTA:
         if self.init_w is None:
             xk = np.zeros(dim, dtype=float)
         else:
-            xk = self.init_w.copy()
+            xk = np.asarray(self.init_w, dtype=float).copy()
+            if xk.shape[0] != dim:
+                raise ValueError(
+                    f"init_w has length {xk.shape[0]}, but expected {dim}."
+                )
+
+        L = self._compute_lipschitz(X)
+        self.L_ = L
+
+        # max_step is the largest step size used as the starting point for
+        # backtracking. If eta is None, use the theoretically safe 1/L.
+        if self.eta is None:
+            max_step = 1.0 / L
+        else:
+            max_step = float(self.eta)
+            if not np.isfinite(max_step) or max_step <= 0.0:
+                raise ValueError("eta must be None or a positive finite float.")
+
+        self.max_step_ = max_step
+        step = max_step
+
         yk = xk.copy()
         tk = 1.0
 
@@ -234,22 +304,28 @@ class LogisticRegressionFISTA:
         for it in range(1, self.n_iter + 1):
             grad_yk = self._smooth_grad(X, y, yk)
 
+            bt = 0
             if self.line_search:
-                step_local = min(step * 2.0, self.eta)
-                smooth_yk = self._smooth_loss(X, y, yk)
+                # Let step recover if it was reduced previously, but never
+                # exceed max_step.
+                step_local = min(step * 2.0, max_step)
 
                 while True:
                     if is_group:
                         x_next = self._group_prox(yk - step_local * grad_yk, step_local)
                     else:
                         x_next = self._prox(yk - step_local * grad_yk, step_local)
+
                     lhs = self._smooth_loss(X, y, x_next)
                     rhs = self._quadratic_upper_bound(X, y, x_next, yk, grad_yk, step_local)
 
                     if lhs <= rhs + 1e-14:
                         step = step_local
                         break
+
                     step_local *= 0.5
+                    bt += 1
+
                     if step_local < 1e-20:
                         step = step_local
                         break
@@ -261,43 +337,51 @@ class LogisticRegressionFISTA:
 
             t_next = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * tk * tk))
             y_next = x_next + ((tk - 1.0) / t_next) * (x_next - xk)
-            
-            # #ISTAの場合（予備）
-            # t_next = 1.0
-            # y_next = x_next.copy()
-            
 
             obj = self._full_objective(X, y, x_next, is_group=is_group)
 
+            # Monotone restart: if acceleration worsens the full objective,
+            # take one prox-gradient step from xk and reset momentum.
             if obj > obj_prev:
                 grad_xk = self._smooth_grad(X, y, xk)
-                step_local = min(step * 2.0, self.eta)
+                bt_restart = 0
 
-                while True:
+                if self.line_search:
+                    step_local = min(step * 2.0, max_step)
+
+                    while True:
+                        if is_group:
+                            x_next = self._group_prox(xk - step_local * grad_xk, step_local)
+                        else:
+                            x_next = self._prox(xk - step_local * grad_xk, step_local)
+
+                        lhs = self._smooth_loss(X, y, x_next)
+                        rhs = self._quadratic_upper_bound(X, y, x_next, xk, grad_xk, step_local)
+
+                        if lhs <= rhs + 1e-14:
+                            step = step_local
+                            break
+
+                        step_local *= 0.5
+                        bt_restart += 1
+
+                        if step_local < 1e-20:
+                            step = step_local
+                            break
+                else:
                     if is_group:
-                        x_next = self._group_prox(xk - step_local * grad_xk, step_local)
+                        x_next = self._group_prox(xk - step * grad_xk, step)
                     else:
-                        x_next = self._prox(xk - step_local * grad_xk, step_local)
-
-                    lhs = self._smooth_loss(X, y, x_next)
-                    rhs = self._quadratic_upper_bound(X, y, x_next, xk, grad_xk, step_local)
-
-                    if lhs <= rhs + 1e-14:
-                        step = step_local
-                        break
-
-                    step_local *= 0.5
-                    if step_local < 1e-20:
-                        step = step_local
-                        break
+                        x_next = self._prox(xk - step * grad_xk, step)
 
                 t_next = 1.0
                 y_next = x_next.copy()
                 obj = self._full_objective(X, y, x_next, is_group=is_group)
+                bt += bt_restart
 
             self.objective_history_.append(obj)
 
-            # gradient mapping norm
+            # Gradient mapping norm at yk.
             grad_map = (yk - x_next) / step
             grad_map_norm = np.linalg.norm(grad_map)
 
@@ -311,10 +395,11 @@ class LogisticRegressionFISTA:
                 print(
                     f"[FISTA] iter={it:4d}  obj={obj:.12e}  "
                     f"rel_obj={rel_obj:.3e}  step={step:.3e}  "
-                    f"step_norm={step_norm:.3e}  grad_map={grad_map_norm:.3e}  nnz={nnz}"
+                    f"step_norm={step_norm:.3e}  grad_map={grad_map_norm:.3e}  "
+                    f"bt={bt}  nnz={nnz}"
                 )
 
-            if rel_obj < self.tol or rel_step < self.tol*10:
+            if rel_obj < self.tol or rel_step < self.tol * 10:
                 xk = x_next
                 self.converged_ = True
                 self.n_iter_ = it
@@ -329,6 +414,8 @@ class LogisticRegressionFISTA:
         w, b = self._split_params(xk)
         self.w = w
         self.b = b
+        self.final_step_ = step
+
         print("Is converged? ... ", self.converged_)
         return self
 
@@ -341,5 +428,3 @@ class LogisticRegressionFISTA:
     def predict(self, X: np.ndarray) -> np.ndarray:
         p1 = self.predict_proba(X)[:, 1]
         return (p1 >= 0.5).astype(int)
-
-
