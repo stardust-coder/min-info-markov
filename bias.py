@@ -358,7 +358,6 @@ def one_outer_rep_fixed_model(
         "mc_expected_risk_se": mc_expected_risk_se,
         "B_hat_plus": float(B_hat),
         "B_true": float(B_true),
-        "diff_plus": float(B_hat - B_true),
         "refit_converged": is_converged_fit,
         "plic": float(plic),
     }
@@ -433,7 +432,6 @@ def monte_carlo_bias_check_parallel(
         "mc_expected_risk_se",
         "B_hat_plus",
         "B_true",
-        "diff_plus",
         "plic",
     ]:
         summary.update(_mean_se(df_ok, col))

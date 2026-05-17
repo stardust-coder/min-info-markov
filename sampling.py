@@ -42,50 +42,6 @@ def torus_pair_feature(x_now, x_lag):
 
     return out
 
-def compute_h_from_series(
-    x: np.ndarray,
-    order: int,
-    pair_feature: Callable[[np.ndarray, np.ndarray], np.ndarray],
-    feature_dim: int,
-) -> np.ndarray:
-    """
-    時系列 x から十分統計量 h を計算する。
-
-    x: shape (N, p)
-    order: Markov order
-    pair_feature: h(x_t, x_{t-j})
-    feature_dim: pair_feature の次元
-
-    return:
-        shape (feature_dim * order, 1)
-
-    数式では、
-
-        H_j(x) = sum_{t=j}^{N-1} h(x_t, x_{t-j})
-
-    を j = 1, ..., order について縦に並べたもの。
-
-    order = 1 かつ h(x_t, x_{t-1}) = x_t ⊗ x_{t-1} なら、
-        return shape = (p^2, 1)
-
-    order = q なら、
-        return shape = (q * p^2, 1)
-    """
-    N, p = x.shape
-    H = np.zeros((feature_dim * order, 1))
-
-    for j in range(1, order + 1):
-        block = np.zeros((feature_dim, 1))
-
-        for t in range(j, N):
-            block += pair_feature(x[t], x[t - j])
-
-        start = (j - 1) * feature_dim
-        end = j * feature_dim
-        H[start:end] = block
-
-    return H
-
 
 # ============================================================
 # Affected pairs under swap
@@ -277,7 +233,7 @@ def exchange(
             pair_feature=pair_feature,
             feature_dim=feature_dim,
         )
-
+        
         log_rho = float(theta.T @ delta)
         rho = np.exp(min(log_rho, 700))
 
@@ -313,7 +269,7 @@ def sample_from_mininfo_markov(N, dim):
     # 各 (i, j) ペアごとに返すので 4 * p * p
     feature_dim = 4 * p * p
 
-    _model_param = np.ones((feature_dim * order, 1), dtype=np.float64)
+    _model_param = np.ones((feature_dim * order, 1), dtype=np.float64) * 0.5
 
     _samples = np.random.uniform(0.0, 2.0 * np.pi, size=(N, p))
 
