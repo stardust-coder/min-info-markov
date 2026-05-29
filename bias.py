@@ -139,12 +139,21 @@ def besag_log_likelihood_from_X(theta: np.ndarray, X: np.ndarray) -> float:
     return float(-np.sum(np.logaddexp(0.0, -eta)))
 
 def make_groups(dim, order, design_matrix):
-    # n_features = order * dim * dim * 4
     n_features = design_matrix.shape[1]
     return np.arange(n_features).reshape(-1, 4*order)
 
 
-def besag_PMLE_fista(raw, order, group_lasso=False, n_iter=1000, L1_=0, X=None, ic=False, init=None):
+def besag_PMLE_fista(
+    raw,
+    order,
+    group_lasso=False,
+    n_iter=1000,
+    L1_=0,
+    X=None,
+    ic=False,
+    init=None,
+    score_aggregation: str = "both",
+):
     """
     Besag PMLE を logistic regression として解く FISTA 版。
 
@@ -157,6 +166,11 @@ def besag_PMLE_fista(raw, order, group_lasso=False, n_iter=1000, L1_=0, X=None, 
     """
     raw = np.asarray(raw)
     n, dim = raw.shape
+
+    if score_aggregation not in {"second", "both", "half_both"}:
+        raise ValueError(
+            "score_aggregation must be one of 'second', 'both', or 'half_both'."
+        )
 
     assert n <= 1500
 
@@ -237,17 +251,39 @@ def besag_PMLE_fista(raw, order, group_lasso=False, n_iter=1000, L1_=0, X=None, 
                 "Please modify the pair-index construction to match build_X_torus."
             )
 
-        second_index = pairs[:, 1]
 
         g = np.zeros((n, n_features), dtype=np.float64)
-        np.add.at(g, second_index, score_rows)
+
+        # ------------------------------------------------------------
+        # Aggregate pairwise scores into a time-indexed score process.
+        #
+        # score_aggregation="second" reproduces the old implementation:
+        #     g_t = sum_{s<t} psi_{s,t}
+        #
+        # score_aggregation="both" assigns the same pair score to both
+        # endpoints s and t.  This is the default because the swap score
+        # depends on both observations and the one-sided aggregation tends
+        # to underestimate the long-run variance by about a factor of two
+        # in the fixed-model bias check.
+        #
+        # score_aggregation="half_both" is included as a diagnostic option:
+        #     g_s += 0.5 psi_{s,t}, g_t += 0.5 psi_{s,t}
+        # ------------------------------------------------------------
+        if score_aggregation == "second":
+            np.add.at(g, pairs[:, 1], score_rows)
+        elif score_aggregation == "both":
+            np.add.at(g, pairs[:, 0], score_rows)
+            np.add.at(g, pairs[:, 1], score_rows)
+        elif score_aggregation == "half_both":
+            np.add.at(g, pairs[:, 0], 0.5 * score_rows)
+            np.add.at(g, pairs[:, 1], 0.5 * score_rows)
 
         # Newey--West bandwidth.
         q_n = int(np.floor(4.0 * (n / 100.0) ** (2.0 / 9.0)))
         q_n = max(1, min(q_n, n - 1))
 
         # Center the score process
-        valid_t = np.arange(order + 1, n - order)
+        valid_t = np.arange(order, n - order)
 
         g_bar = g[valid_t].sum(axis=0) / n
         g_centered = g - g_bar
@@ -273,13 +309,20 @@ def besag_PMLE_fista(raw, order, group_lasso=False, n_iter=1000, L1_=0, X=None, 
         J_reg = J + ridge * np.eye(n_features) #singular回避
         penalty = np.trace(np.linalg.solve(J_reg, I))
         plic = -2.0 * log_likelihood + 2.0 * penalty
-        return clf.w, is_converged, L1_, plic, (log_likelihood,penalty)
+
+        ic_diagnostics = {
+            "log_likelihood": float(log_likelihood),
+            "penalty": float(penalty),
+            "score_aggregation": score_aggregation,
+            "newey_west_bandwidth": int(q_n),
+        }
+        return clf.w, is_converged, L1_, plic, ic_diagnostics
     else:
         return clf.w, is_converged, L1_
     
 
 def sample_from_true(n: int, dim: int, seed: int) -> np.ndarray:
-    return sample_from_mininfo_markov(n, dim)
+    return sample_from_mininfo_markov(n, dim, seed, marginal="vonmises")
 
 
 def one_outer_rep_fixed_model(
@@ -290,6 +333,7 @@ def one_outer_rep_fixed_model(
     n_inner_mc: int = 100,
     n_iter: int = 1000,
     seed_base: int = 12345,
+    score_aggregation: str = "both",
 ) -> dict[str, Any]:
     """One outer replication for fixed-model bias checking.
 
@@ -315,9 +359,11 @@ def one_outer_rep_fixed_model(
         n_iter=n_iter,
         ic=True,
         init=None,
+        score_aggregation=score_aggregation,
     )
 
-    empirical_ll, B_hat = res
+    empirical_ll = res["log_likelihood"]
+    B_hat = res["penalty"]
 
     # Time-scale empirical risk.
     empirical_risk = -empirical_ll / n
@@ -356,8 +402,12 @@ def one_outer_rep_fixed_model(
         "empirical_risk": float(empirical_risk),
         "mc_expected_risk": mc_expected_risk,
         "mc_expected_risk_se": mc_expected_risk_se,
+        "B_true_mc_se": float(n * mc_expected_risk_se),
         "B_hat_plus": float(B_hat),
         "B_true": float(B_true),
+        "gap_B_hat_minus_B_true": float(B_hat - B_true),
+        "ratio_B_hat_to_B_true": float(B_hat / B_true) if B_true != 0 else float("nan"),
+        "score_aggregation": score_aggregation,
         "refit_converged": is_converged_fit,
         "plic": float(plic),
     }
@@ -367,6 +417,9 @@ def _mean_se(df: pd.DataFrame, col: str) -> dict[str, float]:
     return {
         f"mean_{col}": float(df[col].mean()),
         f"se_{col}": float(df[col].std(ddof=1) / np.sqrt(len(df)))
+        if len(df) > 1
+        else float("nan"),
+        f"sd_{col}": float(df[col].std(ddof=1))
         if len(df) > 1
         else float("nan"),
     }
@@ -383,6 +436,7 @@ def monte_carlo_bias_check_parallel(
     n_jobs: int = 10,
     verbose: int = 10,
     save_csv_path: str | None = None,
+    score_aggregation: str = "both",
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Run fixed-model outer Monte Carlo replications in parallel.
 
@@ -397,6 +451,7 @@ def monte_carlo_bias_check_parallel(
             n_inner_mc=n_inner_mc,
             n_iter=n_iter,
             seed_base=seed_base,
+            score_aggregation=score_aggregation,
         )
         for r in range(n_outer_rep)
     )
@@ -420,6 +475,7 @@ def monte_carlo_bias_check_parallel(
         "order": order,
         "sample_size": sample_size,
         "n_inner_mc": n_inner_mc,
+        "score_aggregation": score_aggregation,
         "mean_n": float(df_ok["n"].mean()),
         "mean_num_pseudo_terms": float(df_ok["num_pseudo_terms"].mean()),
         "mean_num_params": float(df_ok["num_params"].mean()),
@@ -430,8 +486,11 @@ def monte_carlo_bias_check_parallel(
         "empirical_risk",
         "mc_expected_risk",
         "mc_expected_risk_se",
+        "B_true_mc_se",
         "B_hat_plus",
         "B_true",
+        "gap_B_hat_minus_B_true",
+        "ratio_B_hat_to_B_true",
         "plic",
     ]:
         summary.update(_mean_se(df_ok, col))
@@ -447,15 +506,26 @@ def main() -> None:
         description="Fixed-model Besag PLIC bias check using time-scale normalization"
     )
 
-    parser.add_argument("--dim", type=int, default=5)
+    parser.add_argument("--dim", type=int, default=1)
     parser.add_argument("--order", type=int, default=1)
     parser.add_argument("--sample-size", type=int, default=1000)
-    parser.add_argument("--n-outer-rep", type=int, default=200)
-    parser.add_argument("--n-inner-mc", type=int, default=100)
-    parser.add_argument("--n-iter", type=int, default=1000)
+    parser.add_argument("--n-outer-rep", type=int, default=1000)
+    parser.add_argument("--n-inner-mc", type=int, default=1000)
+    parser.add_argument("--n-iter", type=int, default=5000)
     parser.add_argument("--seed-base", type=int, default=123)
-    parser.add_argument("--n-jobs", type=int, default=10)
+    parser.add_argument("--n-jobs", type=int, default=50)
     parser.add_argument("--save-csv-path", type=str, default="bias_check.csv")
+    parser.add_argument(
+        "--score-aggregation",
+        type=str,
+        default="both",
+        choices=["second", "both", "half_both"],
+        help=(
+            "How to aggregate pairwise Besag scores for the Newey--West I estimator. "
+            "'second' reproduces the old one-sided implementation; "
+            "'both' is the recommended default; 'half_both' is diagnostic."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -470,6 +540,7 @@ def main() -> None:
         n_jobs=args.n_jobs,
         verbose=10,
         save_csv_path=args.save_csv_path,
+        score_aggregation=args.score_aggregation,
     )
 
     print(summary)

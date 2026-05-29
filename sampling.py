@@ -261,26 +261,36 @@ def exchange(
 # ============================================================
 # Sampling from minimum information Markov model
 # ============================================================
-def sample_from_mininfo_markov(N, dim):
+def sample_from_mininfo_markov(N, dim, seed=None, marginal="uniform"):
     p = dim
     order = 1
 
-    # torus_pair_feature は cc, cs, sc, ss の4種類を
-    # 各 (i, j) ペアごとに返すので 4 * p * p
-    feature_dim = 4 * p * p
+    if seed is not None:
+        state = np.random.get_state()
+        np.random.seed(seed)
 
-    _model_param = np.ones((feature_dim * order, 1), dtype=np.float64) * 0.5
+    try:
+        feature_dim = 4 * p * p
 
-    _samples = np.random.uniform(0.0, 2.0 * np.pi, size=(N, p))
+        _model_param = np.ones((feature_dim * order, 1), dtype=np.float64) * 0.5
 
-    samples, hstar_list, x_final = exchange(
-        rawdata=_samples,
-        theta=_model_param,
-        order=order,
-        L=10000,
-        pair_feature=torus_pair_feature,
-        feature_dim=feature_dim,
-        burnin=1000,
-    )
+        if marginal == "uniform":
+            _samples = np.random.uniform(0.0, 2.0 * np.pi, size=(N, p))
+        else:
+            _samples = np.mod(np.random.vonmises(mu=0.0, kappa=1.0, size=(N, p)),2.0 * np.pi)
 
-    return samples[-1], _model_param
+        samples, hstar_list, x_final = exchange(
+            rawdata=_samples,
+            theta=_model_param,
+            order=order,
+            L=10000,
+            pair_feature=torus_pair_feature,
+            feature_dim=feature_dim,
+            burnin=1000,
+        )
+
+        return samples[-1], _model_param
+
+    finally:
+        if seed is not None:
+            np.random.set_state(state)
