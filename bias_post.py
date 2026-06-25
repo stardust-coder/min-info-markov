@@ -1,62 +1,110 @@
-import pandas as pd
-import numpy as np
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import pandas as pd
 
-# CSV読み込み
-df = pd.read_csv("bias_check.csv")
+DIR_PATH = "/home/sukeda/min-info-markov/logs/bias_check/smallridge/"
+CSV_PATH = DIR_PATH + "tic_bple_bias_check-inner5000-vM.csv"
+OUT_PATH = "B_true_vs_B_hat.png"
 
-# 成功したrepだけ使う
-df = df[df["ok"] == True].copy()
-df = df.sort_values("rep_id").reset_index(drop=True)
-df["B_hat"] = df["B_hat_plus"]
 
-# 累積平均
-m = np.arange(1, len(df) + 1)
+def main():
+    df = pd.read_csv(CSV_PATH)
 
-df["cummean_B_true"] = df["B_true"].expanding().mean()
-df["cummean_B_hat"] = df["B_hat"].expanding().mean()
+    required_cols = [
+        "rep_id",
+        "n",
+        "B_true",
+        "B_hat_theory",  # Newey-West なし
+        "B_hat_nw",      # Newey-West あり
+    ]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
 
-# 累積標準誤差 → 標準偏差に修正
-df["cumse_B_true"] = df["B_true"].expanding().std(ddof=1) # / np.sqrt(m)
-df["cumse_B_hat"] = df["B_hat"].expanding().std(ddof=1) # / np.sqrt(m)
+    df = df.sort_values("rep_id").reset_index(drop=True)
 
-df[["cumse_B_true", "cumse_B_hat"]] = df[["cumse_B_true", "cumse_B_hat"]].fillna(0)
+    n_values = sorted(df["n"].dropna().unique())
+    n_label = int(n_values[0]) if len(n_values) == 1 else "mixed"
 
-# plot
-df = df.tail(100)
-plt.figure(figsize=(9, 5))
+    df["mc_rep"] = range(1, len(df) + 1)
 
-plt.plot(m, df["cummean_B_true"], label="B_true")
-# plt.fill_between(
-#     m,
-#     df["cummean_B_true"] - 1.96 * df["cumse_B_true"],
-#     df["cummean_B_true"] + 1.96 * df["cumse_B_true"],
-#     alpha=0.2,
-# )
+    # 累積平均
+    df["cum_B_true"] = df["B_true"].expanding().mean()
+    df["cum_B_hat_no_NW"] = df["B_hat_theory"].expanding().mean()
+    df["cum_B_hat_NW"] = df["B_hat_nw"].expanding().mean()
 
-plt.plot(m, df["cummean_B_hat"], label="E[B_hat] estimate")
-plt.fill_between(
-    m,
-    df["cummean_B_hat"] - 1.96 * df["cumse_B_hat"],
-    df["cummean_B_hat"] + 1.96 * df["cumse_B_hat"],
-    alpha=0.2,
-)
+    # 累積標準偏差
+    df["sd_B_true"] = df["B_true"].expanding().std(ddof=1)
+    df["sd_B_hat_no_NW"] = df["B_hat_theory"].expanding().std(ddof=1)
+    df["sd_B_hat_NW"] = df["B_hat_nw"].expanding().std(ddof=1)
 
-plt.xlabel("number of Monte Carlo replications")
-plt.ylabel("B")
-plt.title("Convergence check: B_true vs E[B_hat]")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("bias.png")
+    # r=1 では標準偏差が NaN になるので 0 にする
+    sd_cols = ["sd_B_true", "sd_B_hat_no_NW", "sd_B_hat_NW"]
+    df[sd_cols] = df[sd_cols].fillna(0.0)
 
-# 数値確認
-print("mean B_true =", df["B_true"].mean())
-print("SE B_true   =", df["B_true"].std(ddof=1) / np.sqrt(len(df)))
-print("SD B_true   =", df["B_true"].std(ddof=1))
+    # df = df.tail(100)
+    x = df["mc_rep"]
+    fig, ax = plt.subplots(figsize=(9, 5.5))
 
-print("mean B_hat  =", df["B_hat"].mean())
-print("SE B_hat    =", df["B_hat"].std(ddof=1) / np.sqrt(len(df)))
-print("SD B_hat    =", df["B_hat"].std(ddof=1))
+    series = [
+        (
+            "cum_B_true",
+            "sd_B_true",
+            r"cumulative mean of $B_{\mathrm{true}}$",
+        ),
+        (
+            "cum_B_hat_no_NW",
+            "sd_B_hat_no_NW",
+            r"cumulative mean of $\widehat B$ without Newey-West",
+        ),
+        (
+            "cum_B_hat_NW",
+            "sd_B_hat_NW",
+            r"cumulative mean of $\widehat B$ with Newey-West",
+        ),
+    ]
 
-print("difference =", df["B_hat"].mean() - df["B_true"].mean())
+    for y_col, sd_col, label in series:
+        y = df[y_col]
+        sd = df[sd_col]
+
+        ax.plot(x, y, linewidth=2, label=label)
+
+        if "cum_B_hat" in y_col:
+            ax.fill_between(x, y - sd, y + sd, alpha=0.15)
+
+    ax.set_xlabel("Number of outer Monte Carlo replications")
+    ax.set_ylabel("Cumulative mean")
+    ax.set_title(
+        rf"Sequential convergence of $\widehat B$ to $B_{{\mathrm{{true}}}}$ "
+        rf"at $n={n_label}$ with ±SD bands"
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    fig.tight_layout()
+
+    Path(OUT_PATH).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(OUT_PATH, dpi=300)
+    plt.show()
+
+    print("Final cumulative means and SDs:")
+    print(
+        df[
+            [
+                "mc_rep",
+                "cum_B_true",
+                "cum_B_hat_no_NW",
+                "cum_B_hat_NW",
+                "sd_B_true",
+                "sd_B_hat_no_NW",
+                "sd_B_hat_NW",
+            ]
+        ].tail(1)
+    )
+    print(f"Saved plot to: {OUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()

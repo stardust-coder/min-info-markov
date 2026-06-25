@@ -272,7 +272,8 @@ def sample_from_mininfo_markov(N, dim, seed=None, marginal="uniform"):
     try:
         feature_dim = 4 * p * p
 
-        _model_param = np.ones((feature_dim * order, 1), dtype=np.float64) * 0.5
+        # _model_param = np.ones((feature_dim * order, 1), dtype=np.float64) * 0.5
+        _model_param = np.array([[1,-1,0,0]]).T
 
         if marginal == "uniform":
             _samples = np.random.uniform(0.0, 2.0 * np.pi, size=(N, p))

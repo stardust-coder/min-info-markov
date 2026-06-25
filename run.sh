@@ -1,1 +1,1 @@
-python run_PPC.py --dim 5 --order 1 --method pmle_grouplasso
+python run_PPC.py --dim 25 --order 1 --method pmle_grouplasso --save_dir "logs/25dim-Kuramoto/K=0.9/1"

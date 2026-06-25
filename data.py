@@ -126,19 +126,33 @@ def erdos_renyi_edges(n, p, directed=False, self_loop=False, seed=None):
 
 def Kuramoto_Model(N, seed=None, verbose=False):
     rng = np.random.default_rng(seed)
+    # edge = [(1, 2), (2, 3), (3, 4), (4, 5)]
+    edge = erdos_renyi_edges(n=N, p=0.2, seed=seed)
+    print("True edges in Kuramoto model:")
+    adj = {i: [] for i in range(1, N + 1)}
 
-    edge = [(1, 2), (2, 3), (3, 4), (4, 5)]
-    # edge = erdos_renyi_edges(n=N, p=0.3, seed=seed)
-    print("True edges in Kuramoto model:", edge)
+    for i, j in edge:
+        adj[i].append(j)
+        adj[j].append(i) 
 
     K = np.zeros((N, N))  # 結合強度
     for (i, j) in edge:
-        K[i - 1][j - 1] = 4.5
-        K[j - 1][i - 1] = 4.5  # 非対称Kのときはこちらのみ.
-    print("K in Kuramoto model:")
-    print(K)
+        K[i - 1][j - 1] = 25 * 0.9
+        K[j - 1][i - 1] = 25 * 0.9  # 非対称Kのときはこちらのみ.
 
-    T = 10
+    if N <= 5:
+        print("K in Kuramoto model:")
+        print(K)
+    else:
+        with open("25dim", "w", encoding="utf-8") as f:
+            for i in range(1, N + 1):
+                neighbors = sorted(adj[i])
+                line = f"{i}: " + " ".join(map(str, neighbors))
+
+                print(line)
+                f.write(line + "\n")
+    
+    T = 15
     dt = 0.01
     steps = int(T / dt)
     print("#Time steps:", steps)
