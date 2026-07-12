@@ -91,6 +91,178 @@ def simulate_t_VAR(dim,order,steps):
     return var_data, true_param.flatten()
 
 
+import numpy as np
+
+
+def wrap_phase(x):
+    """
+    位相を [-pi, pi) に折り返す
+    """
+    return (x + np.pi) % (2 * np.pi) - np.pi
+
+
+def sample_mixed_vonmises_noise(
+    n,
+    kappa_high=8.0,
+    kappa_low=0.5,
+    noisy_fraction=0.05,
+    rng=None
+):
+    """
+    多くの試行では集中した von Mises ノイズを使い、
+    一部の試行では低集中ノイズを使って実データ風のノイズを混ぜる。
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    noise = rng.vonmises(mu=0.0, kappa=kappa_high, size=n)
+
+    n_noisy = int(noisy_fraction * n)
+    if n_noisy > 0:
+        noisy_idx = rng.choice(n, size=n_noisy, replace=False)
+        noise[noisy_idx] = rng.vonmises(mu=0.0, kappa=kappa_low, size=n_noisy)
+
+    return noise
+
+
+def generate_5d_phase_timeseries_data(
+    n_steps=1500,
+    kappa_init=0.2,
+    offsets=None,
+    kappa_noise=8.0,
+    kappa_noisy=0.5,
+    noisy_fraction=0.05,
+    graph=None,
+    seed=None,
+    self_kappa=20.0,
+    root_kappa=0.2,
+):
+    """
+    5次元の位相時系列データを生成する。
+
+    各辺 (parent, child) について、
+
+        X[t, parent] -> X[t+1, child]
+
+    という 1期先の依存を持つ。
+
+    Parameters
+    ----------
+    n_steps : int
+        時系列の長さ。
+    kappa_init : float
+        初期位相 X[0] を生成する von Mises 分布の集中度。
+        小さいほど一様分布に近い。
+    offsets : array-like or None
+        各辺に対応する固定位相オフセット。
+    kappa_noise : float
+        通常ノイズの von Mises 集中度。
+        大きいほど親ノードから子ノードへの依存が強い。
+    kappa_noisy : float
+        noisy な時点で使う低集中ノイズ。
+    noisy_fraction : float
+        noisy な時点の割合。
+    graph : list of tuple or None
+        親子関係を表す辺のリスト。
+        デフォルトは [(0,1), (1,2), (2,3), (3,4)]。
+    seed : int or None
+        乱数シード。
+    self_kappa : float
+        親を持たない、または辺で更新されないノードの自己遷移ノイズ集中度。
+        大きいほど X[t+1, i] が X[t, i] に近い。
+    root_kappa : float
+        root ノードを各時刻で再生成する場合の集中度。
+        ここでは root ノードの弱い外部入力として使う。
+
+    Returns
+    -------
+    X : ndarray, shape (n_steps, 5)
+        5次元の位相時系列データ。
+    """
+
+    rng = np.random.default_rng(seed)
+
+    n_nodes = 5
+    X = np.zeros((n_steps, n_nodes), dtype=float)
+
+    # デフォルトでは鎖構造: x1 -> x2 -> x3 -> x4 -> x5
+    if graph is None:
+        graph = [(0, 1), (1, 2), (2, 3), (3, 4)]
+
+    if offsets is None:
+        offsets = np.array([
+            np.pi / 4,
+            -np.pi / 6,
+            np.pi / 3,
+            -np.pi / 8,
+        ])
+    else:
+        offsets = np.asarray(offsets, dtype=float)
+
+    if len(offsets) != len(graph):
+        raise ValueError("offsets の長さは graph の辺の数と一致している必要があります。")
+
+    # 初期値
+    X[0, :] = rng.vonmises(
+        mu=0.0,
+        kappa=kappa_init,
+        size=n_nodes,
+    )
+
+    # child ごとに incoming edge を整理
+    parents_of = {j: [] for j in range(n_nodes)}
+    for edge_idx, (parent, child) in enumerate(graph):
+        parents_of[child].append((parent, offsets[edge_idx]))
+
+    for t in range(n_steps - 1):
+        # まず全ノードを自己遷移で更新
+        # これにより、親を持たない root node も時系列として自然に動く
+        self_noise = rng.vonmises(
+            mu=0.0,
+            kappa=self_kappa,
+            size=n_nodes,
+        )
+        X[t + 1, :] = wrap_phase(X[t, :] + self_noise)
+
+        # root ノードには弱い外部ゆらぎを入れる
+        # デフォルトの鎖なら node 0 が root
+        children = {child for _, child in graph}
+        roots = [i for i in range(n_nodes) if i not in children]
+        for r in roots:
+            root_noise = rng.vonmises(mu=0.0, kappa=root_kappa)
+            X[t + 1, r] = wrap_phase(X[t, r] + root_noise)
+
+        # 各 child は、1期前の parent から生成される
+        for child, parent_list in parents_of.items():
+            if len(parent_list) == 0:
+                continue
+
+            # 通常は親が1つの想定。
+            # 複数親の場合は circular mean で合成する。
+            angles = []
+
+            for parent, offset in parent_list:
+                eps = sample_mixed_vonmises_noise(
+                    n=1,
+                    kappa_high=kappa_noise,
+                    kappa_low=kappa_noisy,
+                    noisy_fraction=noisy_fraction,
+                    rng=rng,
+                )[0]
+
+                angle = X[t, parent] + offset + eps
+                angles.append(angle)
+
+            angles = np.asarray(angles)
+
+            if len(angles) == 1:
+                X[t + 1, child] = wrap_phase(angles[0])
+            else:
+                z = np.mean(np.exp(1j * angles))
+                X[t + 1, child] = wrap_phase(np.angle(z))
+
+    return X
+
 
 def erdos_renyi_edges(n, p, directed=False, self_loop=False, seed=None):
     """
@@ -124,21 +296,33 @@ def erdos_renyi_edges(n, p, directed=False, self_loop=False, seed=None):
 
     return edges
 
-def Kuramoto_Model(N, seed=None, verbose=False):
+def Kuramoto_Model(N, seed=None, verbose=False, directed_K=False, T=15, base_k=0.4):
     rng = np.random.default_rng(seed)
-    # edge = [(1, 2), (2, 3), (3, 4), (4, 5)]
-    edge = erdos_renyi_edges(n=N, p=0.2, seed=seed)
-    print("True edges in Kuramoto model:")
+    edge = [(1,2),(2,3),(3,4),(4,5)]
+    # edge = erdos_renyi_edges(
+    #     n=N,
+    #     p=0.2,
+    #     directed=directed_K,
+    #     self_loop=False,
+    #     seed=seed,
+    # )
+    
     adj = {i: [] for i in range(1, N + 1)}
-
     for i, j in edge:
         adj[i].append(j)
         adj[j].append(i) 
 
-    K = np.zeros((N, N))  # 結合強度
-    for (i, j) in edge:
-        K[i - 1][j - 1] = 25 * 0.9
-        K[j - 1][i - 1] = 25 * 0.9  # 非対称Kのときはこちらのみ.
+    K = np.zeros((N, N))
+
+    if directed_K:
+        for i, j in edge:
+            # i -> j
+            # K[target, source]
+            K[j - 1, i - 1] = base_k
+    else:
+        for i, j in edge:
+            K[i - 1, j - 1] = base_k
+            K[j - 1, i - 1] = base_k
 
     if N <= 5:
         print("K in Kuramoto model:")
@@ -151,8 +335,7 @@ def Kuramoto_Model(N, seed=None, verbose=False):
 
                 print(line)
                 f.write(line + "\n")
-    
-    T = 15
+
     dt = 0.01
     steps = int(T / dt)
     print("#Time steps:", steps)
@@ -173,7 +356,7 @@ def Kuramoto_Model(N, seed=None, verbose=False):
         dtheta = np.zeros(N)
         for i in range(N):
             coupling = np.sum(K[i, :] * np.sin(theta - theta[i]))
-            dtheta[i] = omega[i] + (1.0 / N) * coupling
+            dtheta[i] = omega[i] + coupling
 
         theta += dtheta * dt
 
@@ -214,7 +397,7 @@ def Kuramoto_Model(N, seed=None, verbose=False):
         plt.show()
         plt.clf()
 
-    return theta_history
+    return theta_history, K
 
 
 def artificial_PAC_data_Tort():
@@ -423,50 +606,7 @@ def make_two_burst_phase_locked_pac_signal(
     return t, x, low_component, high_component, envelope
 
 
-from utils import bandpass_filter
-from scipy.signal import butter, filtfilt, hilbert
-def extract_phase_and_amplitude(
-    x,
-    fs,
-    amp_band=(30, 50),
-    phase_band=(5, 12),
-    order=4,
-):
-    """
-    x: shape (n, num_channel) or (n,)
-
-    return:
-        raw: shape (n, 2 * num_channel)
-            [phi_0, A_0, phi_1, A_1, ...]
-    """
-    x = np.asarray(x)
-
-    if x.ndim == 1:
-        x = x[:, None]
-
-    if x.ndim != 2:
-        raise ValueError(f"x must have shape (n, num_channel), got {x.shape}")
-
-    # 高周波帯振幅
-    s_amp = bandpass_filter(x, fs, amp_band[0], amp_band[1], order=order)
-    analytic_amp = hilbert(s_amp, axis=0)
-    A_t = np.abs(analytic_amp)
-
-    # 低周波帯位相
-    s_phase = bandpass_filter(x, fs, phase_band[0], phase_band[1], order=order)
-    analytic_phase = hilbert(s_phase, axis=0)
-    phi_t = np.angle(analytic_phase)
-
-    n, num_channel = x.shape
-    raw = np.empty((n, 2 * num_channel), dtype=np.float64)
-
-    raw[:, 0::2] = phi_t
-    raw[:, 1::2] = A_t
-
-    return raw
-
-
-def simulated_data(mode="burst_pac"):
+def simulated_pac_data(mode="burst_pac"):
     meta = {}
     if mode == "burst_pac":
         fs = 1000

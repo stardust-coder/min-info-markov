@@ -5,10 +5,10 @@ import glob
 import re
 import pandas as pd
 
-DIR_NAME = "logs"
+DIR_NAME = "logs/marmoset20/epoch0/alpha/post/"
 npy_names = glob.glob(DIR_NAME+"*_lasso_*.npy")
 npy_names.sort()
-d = 25
+d = 20
 
 for i, npy_name in enumerate(npy_names[::]):
     M1 = np.load(npy_name)
@@ -104,67 +104,103 @@ with open(DIR_NAME+file_path, "r") as f:
             dst = int(dst_str)
             GT_edges.append((src, dst))
 
-
 df = pd.read_csv(DIR_NAME + "regularization_path_ic_debug.csv")
-best_str = df.loc[df["plic"].idxmin(), "support_string"]
 
 def idx_to_nodes(flat_idx):
-    i,j = np.unravel_index(flat_idx, (d,d))
-    return (i+1).item(), (j+1).item()
+    i, j = np.unravel_index(flat_idx, (d, d))
+    return (i + 1).item(), (j + 1).item()
 
 def str_to_nodes(x):
-    return [idx_to_nodes(int(item)) for item in x.split(",")]
+    if pd.isna(x) or str(x).strip() == "":
+        return []
+    return [idx_to_nodes(int(item)) for item in str(x).split(",")]
 
-# 推定された directed edge
-pred_edges = set(str_to_nodes(best_str))
-print("#Num of pred edges: ", len(pred_edges))
+def calc_metrics(support_str):
+    # 推定された directed edge
+    pred_edges = set(str_to_nodes(support_str))
 
-# 自己ループを除く
-pred_edges = {(i, j) for i, j in pred_edges if i != j}
-GT_directed = set(GT_edges)
+    # 自己ループを除く
+    pred_edges = {(i, j) for i, j in pred_edges if i != j}
+    GT_directed = set(GT_edges)
 
-# 全候補 edge（向きあり、自己ループなし）
-all_edges = {
-    (i, j)
-    for i in range(1, d + 1)
-    for j in range(1, d + 1)
-    if i != j
-}
+    # 全候補 edge（向きあり、自己ループなし）
+    all_edges = {
+        (i, j)
+        for i in range(1, d + 1)
+        for j in range(1, d + 1)
+        if i != j
+    }
 
-TP = pred_edges & GT_directed
-FP = pred_edges - GT_directed
-FN = GT_directed - pred_edges
-TN = all_edges - (TP | FP | FN)
-precision = len(TP) / (len(TP) + len(FP)) if len(TP) + len(FP) > 0 else 0
-recall = len(TP) / (len(TP) + len(FN)) if len(TP) + len(FN) > 0 else 0
-f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0
+    TP = pred_edges & GT_directed
+    FP = pred_edges - GT_directed
+    FN = GT_directed - pred_edges
+    TN = all_edges - (TP | FP | FN)
 
+    precision = len(TP) / (len(TP) + len(FP)) if len(TP) + len(FP) > 0 else 0
+    recall = len(TP) / (len(TP) + len(FN)) if len(TP) + len(FN) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0
 
-with open(DIR_NAME+"metric", "w", encoding="utf-8") as f:
-    line1 = f"TP: {len(TP)} FP: {len(FP)} FN: {len(FN)} TN: {len(TN)}"
-    line2 = f"Precision: {precision}"
-    line3 = f"Recall: {recall}"
-    line4 = f"F1: {f1}"
+    return {
+        "num_pred_edges": len(pred_edges),
+        "TP": len(TP),
+        "FP": len(FP),
+        "FN": len(FN),
+        "TN": len(TN),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
-    print(line1)
-    print(line2)
-    print(line3)
-    print(line4)
+# 全行について metric を計算
+metric_rows = []
 
-    f.write(line1 + "\n")
-    f.write(line2 + "\n")
-    f.write(line3 + "\n")
-    f.write(line4 + "\n")
+for idx, row in df.iterrows():
+    metrics = calc_metrics(row["support_string"])
 
-# print("="*5)
-# print("TP:", len(TP))
-# print(sorted(TP))
+    metric_rows.append({
+        "row_index": idx,
+        "plic": row["plic"],
+        "support_string": row["support_string"],
+        **metrics,
+    })
 
-# print("FP:", len(FP))
-# print(sorted(FP))
+metric_df = pd.DataFrame(metric_rows)
 
-# print()
-# print(sorted(FN))
+# 全結果をCSVとして保存
+metric_df.to_csv(DIR_NAME + "metrics_all.csv", index=False)
 
-# print("TN:", len(TN))
-# print(sorted(TN))
+def write_metric_block(f, title, row):
+    lines = [
+        title,
+        f"row_index: {row['row_index']}",
+        f"plic: {row['plic']}",
+        f"support_string: {row['support_string']}",
+        f"#Num of pred edges: {row['num_pred_edges']}",
+        f"TP: {row['TP']} FP: {row['FP']} FN: {row['FN']} TN: {row['TN']}",
+        f"Precision: {row['precision']}",
+        f"Recall: {row['recall']}",
+        f"F1: {row['f1']}",
+        "-" * 50,
+    ]
+
+    for line in lines:
+        print(line)
+        f.write(line + "\n")
+
+# metric_all に全候補の結果を保存
+with open(DIR_NAME + "metric_all", "w", encoding="utf-8") as f:
+    for _, row in metric_df.iterrows():
+        write_metric_block(f, f"Row {row['row_index']}", row)
+
+# precision 最大・recall 最大・PLIC 最小の行を取得
+best_precision_row = metric_df.loc[metric_df["precision"].idxmax()]
+best_recall_row = metric_df.loc[metric_df["recall"].idxmax()]
+best_plic_row = metric_df.loc[metric_df["plic"].idxmin()]
+best_f1_row = metric_df.loc[metric_df["f1"].idxmax()]
+
+# metric に要約結果を保存
+with open(DIR_NAME + "metric", "w", encoding="utf-8") as f:
+    write_metric_block(f, "Best Precision", best_precision_row)
+    write_metric_block(f, "Best Recall", best_recall_row)
+    write_metric_block(f, "Best PLIC", best_plic_row)
+    write_metric_block(f, "Best F1", best_f1_row)

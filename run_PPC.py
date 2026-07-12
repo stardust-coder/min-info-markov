@@ -12,13 +12,14 @@ from scipy.optimize import minimize
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from data import Kuramoto_Model
+from data_sim import Kuramoto_Model, generate_5d_phase_timeseries_data
 
 
 def sample_plot(data, save_dir):
     """Input: array with shape (steps, dim)."""
     df = pd.DataFrame(data)
     df.plot(figsize=(15, 5))
+    plt.legend().remove()
     plt.savefig(save_dir+"/"+"sample_plot.png")
 
 
@@ -35,12 +36,104 @@ def MLE(Y, order):
     print(results.summary())
     return results
 
+def ecog_case1():
+    from data_real import load_marmoset_ecog, extract_feature_matrix, FeatureSpec
+    dataset = load_marmoset_ecog(animal="Ji", session_index=1, window=slice(0, 1500))
+    gamma_phase = extract_feature_matrix(
+        dataset,
+        FeatureSpec(name="gamma_phase", feature="phase", band=(25, 40)),
+        trials=[0],
+    )
+    return gamma_phase
+
+def ecog_case2(mode="pre"):
+    from data_real import (
+        load_marmoset_ecog_epoched,
+        split_marmoset_pre_post_1500ms,
+        extract_feature_matrix,
+        FeatureSpec,
+        NeuralDataset,
+    )
+
+    # ------------------------------------------------------------
+    # 1. Event.mat に基づいて epoch 化
+    # ds_epoch.data shape:
+    #     (n_epochs, n_channels, 3000)
+    # ------------------------------------------------------------
+    ds_epoch = load_marmoset_ecog_epoched(
+        animal="Ji",
+        session_index=1,
+        epoch_window=(-1.5, 1.5),
+        samplerate=1000.0,
+        event_key="cntEvent",
+        event_sample_column=5,
+        event_time_unit="samples_matlab",
+    )
+
+    # ------------------------------------------------------------
+    # 2. pre/post に分割
+    # pre  shape: (n_epochs, n_channels, 1500)
+    # post shape: (n_epochs, n_channels, 1500)
+    # ------------------------------------------------------------
+    pre, post = split_marmoset_pre_post_1500ms(
+        ds_epoch.data,
+        samplerate=ds_epoch.samplerate,
+    )
+    if mode == "post":
+        raw = post
+    else:
+        raw = pre
+    # ------------------------------------------------------------
+    # 3. pre を NeuralDataset として包み直す
+    # extract_feature_matrix は NeuralDataset を要求するため
+    # ------------------------------------------------------------
+    epoched_dataset = NeuralDataset(
+        name=ds_epoch.name + "_epoched",
+        data=raw,
+        channel_names=ds_epoch.channel_names,
+        samplerate=ds_epoch.samplerate,
+        mne_epochs=None,
+    )
+
+    # ------------------------------------------------------------
+    # 4. phase feature を抽出
+    #
+    # 出力 shape:
+    #     (1500, n_channels)
+    # ------------------------------------------------------------
+    phase = extract_feature_matrix(
+        dataset=epoched_dataset,
+        spec=FeatureSpec(
+            name="phase",
+            feature="phase",
+            band=(12, 25), #(8,15)/(12,25)/(25,40)
+        ),
+        trials=[0],
+    )
+
+    return phase
+
+def ecog_case3():
+    return 
+
+
 
 def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000, refit_gtol: float = 1e-8, save_dir: str = "./outputs"):
-    raw = Kuramoto_Model(N=dim)
-    raw = np.asarray(raw)
+    # raw, _ = Kuramoto_Model(N=dim, directed_K=True, base_k=0.1)
+    # raw = generate_5d_phase_timeseries_data(
+    #     n_steps=1500,
+    #     graph=[(0, 1), (0, 2), (0, 3), (0, 4)],
+    # )
+
+    selected_20_with_pfc = [7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
+                        1, 2, 5, 6, 16, 21,
+                        55, 61, 63]
+    raw = ecog_case2(mode="post")[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
+    # import pdb; pdb.set_trace()
     print("raw.shape = ", raw.shape)
+    
     # sample_plot(raw, save_dir)
+    # import pdb; pdb.set_trace()
 
     # ============================================================
     # Feature construction
@@ -696,7 +789,7 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
 
             def run_grid(ls, offset=0, use_parallel=True):
                 if use_parallel:
-                    path_results = Parallel(n_jobs=10, backend="loky", max_nbytes="100M")(
+                    path_results = Parallel(n_jobs=5, backend="loky", max_nbytes="100M")(
                         delayed(fit_lasso_path)(offset + i, lam)
                         for i, lam in enumerate(ls)
                     )
@@ -721,10 +814,10 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
 
                 return scored
 
-            use_parallel = True
+            use_parallel = False
 
             # 1st stage: coarse search.
-            ls1 = np.logspace(4.0, 0, 100) / X.shape[0]
+            ls1 = np.logspace(4.0, 0, 30) / X.shape[0]
             scored1 = run_grid(ls1, offset=0, use_parallel=use_parallel)
 
             best1 = min(scored1, key=lambda d: d["plic"])

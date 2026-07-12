@@ -1,17 +1,128 @@
 import numpy as np
 from scipy.signal import butter, filtfilt, hilbert
-from scipy.special import digamma
 
-def bandpass_filter(x, fs, f_low, f_high, order=4):
+
+def bandpass_filter(
+    x: np.ndarray,
+    fs: float,
+    f_low: float,
+    f_high: float,
+    order: int = 4,
+    axis: int = -1,
+) -> np.ndarray:
+    """
+    Butterworth band-pass filter.
+
+    Parameters
+    ----------
+    x:
+        Input signal.
+    fs:
+        Sampling frequency in Hz.
+    f_low:
+        Lower cutoff frequency in Hz.
+    f_high:
+        Upper cutoff frequency in Hz.
+    order:
+        Filter order.
+    axis:
+        Axis along which to filter.
+    """
     nyq = fs / 2.0
-    b, a = butter(order, [f_low / nyq, f_high / nyq], btype='band')
-    return filtfilt(b, a, x, axis=0)
+
+    if not 0 < f_low < f_high < nyq:
+        raise ValueError(
+            f"Invalid bandpass range: f_low={f_low}, f_high={f_high}, "
+            f"but Nyquist frequency is {nyq} Hz."
+        )
+
+    b, a = butter(
+        order,
+        [f_low / nyq, f_high / nyq],
+        btype="band",
+    )
+
+    return filtfilt(b, a, x, axis=axis)
 
 
-def lowpass_filter(x, fs, cutoff, order=4):
+def lowpass_filter(
+    x: np.ndarray,
+    fs: float,
+    cutoff: float,
+    order: int = 4,
+    axis: int = -1,
+) -> np.ndarray:
+    """
+    Butterworth low-pass filter.
+    """
     nyq = fs / 2.0
-    b, a = butter(order, cutoff / nyq, btype='low')
-    return filtfilt(b, a, x)
+
+    if not 0 < cutoff < nyq:
+        raise ValueError(
+            f"Invalid lowpass cutoff: cutoff={cutoff}, "
+            f"but Nyquist frequency is {nyq} Hz."
+        )
+
+    b, a = butter(
+        order,
+        cutoff / nyq,
+        btype="low",
+    )
+
+    return filtfilt(b, a, x, axis=axis)
+
+
+def get_bandpass(
+    data: np.ndarray,
+    start: float,
+    end: float,
+    *,
+    samplerate: float,
+    order: int = 4,
+    axis: int = -1,
+) -> np.ndarray:
+    """
+    Backward-compatible wrapper for bandpass_filter.
+    """
+    return bandpass_filter(
+        data,
+        fs=samplerate,
+        f_low=start,
+        f_high=end,
+        order=order,
+        axis=axis,
+    )
+
+
+def hilbert_transform(
+    signal: np.ndarray,
+    *,
+    axis: int = -1,
+    verbose: bool = False,
+):
+    """
+    Returns analytic signal, envelope, phase, and instantaneous frequency placeholder.
+
+    Returns
+    -------
+    analytic_signal
+    envelope
+    phase
+    instantaneous_frequency
+    """
+    analytic_signal = hilbert(signal, axis=axis)
+    envelope = np.abs(analytic_signal)
+    phase = np.angle(analytic_signal)
+
+    # 必要なら後で np.diff(np.unwrap(phase)) から計算する
+    instantaneous_frequency = None
+
+    if verbose:
+        print("analytic_signal shape:", analytic_signal.shape)
+        print("envelope shape:", envelope.shape)
+        print("phase shape:", phase.shape)
+
+    return analytic_signal, envelope, phase, instantaneous_frequency
 
 
 def tort_modulation_index(A_t, phi_t, n_bins=18):
@@ -143,3 +254,46 @@ def mvl_surrogate_test(A_t, phi_t, n_surrogates=200):
         "zscore": z,
         "pvalue": p,
     }
+
+
+
+
+def extract_phase_and_amplitude(
+    x,
+    fs,
+    amp_band=(30, 50),
+    phase_band=(5, 12),
+    order=4,
+):
+    """
+    x: shape (n, num_channel) or (n,)
+
+    return:
+        raw: shape (n, 2 * num_channel)
+            [phi_0, A_0, phi_1, A_1, ...]
+    """
+    x = np.asarray(x)
+
+    if x.ndim == 1:
+        x = x[:, None]
+
+    if x.ndim != 2:
+        raise ValueError(f"x must have shape (n, num_channel), got {x.shape}")
+
+    # 高周波帯振幅
+    s_amp = bandpass_filter(x, fs, amp_band[0], amp_band[1], order=order)
+    analytic_amp = hilbert(s_amp, axis=0)
+    A_t = np.abs(analytic_amp)
+
+    # 低周波帯位相
+    s_phase = bandpass_filter(x, fs, phase_band[0], phase_band[1], order=order)
+    analytic_phase = hilbert(s_phase, axis=0)
+    phi_t = np.angle(analytic_phase)
+
+    n, num_channel = x.shape
+    raw = np.empty((n, 2 * num_channel), dtype=np.float64)
+
+    raw[:, 0::2] = phi_t
+    raw[:, 1::2] = A_t
+
+    return raw
