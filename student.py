@@ -124,13 +124,13 @@ def exchange(rawdata: np.ndarray, theta: np.ndarray, order: int, L: int, burnin:
     return samples, hstar_list, x.copy()
 
 def sample_from_mininfo_markov(N):
-    _mu = [0]
-    _Sigma = [[0.5]]
-    _model_param = np.array([[1.0]]).T
-    # _mu = [0, 0]
-    # _Sigma = [[1, 0.5],
-    #          [0.5, 1]]
-    # _model_param = np.array([[1.0,1.0,1.0,1.0]]).T
+    # _mu = [0]
+    # _Sigma = [[0.5]]
+    # _model_param = np.array([[1.0]]).T
+    _mu = [0, 0]
+    _Sigma = [[1, 0.5],
+             [0.5, 1]]
+    _model_param = np.array([[1.0,1.0,1.0,1.0]]).T
 
     rv = multivariate_t(loc=_mu, shape=_Sigma, df=4)
     _samples = rv.rvs(size=N)

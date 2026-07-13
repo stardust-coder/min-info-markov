@@ -132,8 +132,8 @@ def MLE(Y, order):
 
 def run(dim, order, method):
     # raw, true_parameter = simulate_Gaussian_VAR(dim=dim,order=order,steps=1000)
-    # raw, true_parameter = simulate_t_VAR(dim=dim,order=order,steps=1000)
-    raw = pd.read_csv("data/stock.csv").values
+    raw, true_parameter = simulate_t_VAR(dim=dim,order=order,steps=1000)
+    # raw = pd.read_csv("data/stock.csv").values
 
     # sample_plot(raw)
     # print(raw)
@@ -312,10 +312,14 @@ def run(dim, order, method):
         ### MLE for AR or VAR
         start_time = time()
         res_mle = MLE(raw, order=order)
-        # theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
-        # theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
-        theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
-        theta_hat = theta_hat.flatten() #VAR(1) case
+        if raw.shape[1] == 1:
+            if order == 1:
+                theta_hat = res_mle.params[0] / res_mle.params[1] #AR(1) case
+            else:
+                theta_hat = np.array([res_mle.params[k]/res_mle.params[-1] for k in range(res_mle.params.shape[0]-1)]) #AR(d) case
+        else:
+            theta_hat = res_mle.params.T @ np.linalg.inv(res_mle.sigma_u) #VAR(1) case
+            theta_hat = theta_hat.flatten() #VAR(1) case
         optimization_time = None
         end_time = time()
 
@@ -344,8 +348,6 @@ def run(dim, order, method):
         end_time = time()
     else:
         raise ValueError("methodが指定されていません！")
-
-    print_result(theta_hat, npy_name)
     
     # for simulated data
     print("--- 真値 --- ")
@@ -371,7 +373,7 @@ if __name__ == "__main__":
 
     loss_list = []
     time_list = []
-    for r in range(1):
+    for r in range(30):
         print(f"Run {r}")
         _, loss_, time_ = run(args.dim, args.order, args.method)
         loss_list.append(loss_)
