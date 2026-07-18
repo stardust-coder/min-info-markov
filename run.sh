@@ -1,1 +1,0 @@
-python run_PPC.py --dim 20 --order 1 --method pmle_grouplasso --save_dir "logs/marmoset20/epoch0/beta/post"

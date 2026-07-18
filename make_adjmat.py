@@ -5,10 +5,10 @@ import glob
 import re
 import pandas as pd
 
-DIR_NAME = "logs/marmoset20/epoch0/alpha/post/"
-npy_names = glob.glob(DIR_NAME+"*_lasso_*.npy")
+DIR_NAME = "logs/tmp1/"
+npy_names = glob.glob(DIR_NAME+"*_lasso*.npy")
 npy_names.sort()
-d = 20
+d = 5
 
 for i, npy_name in enumerate(npy_names[::]):
     M1 = np.load(npy_name)

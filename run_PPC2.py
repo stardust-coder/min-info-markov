@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from itertools import combinations
 from time import time
 from typing import Any
 
@@ -125,14 +124,14 @@ def ecog_case3():
     dataset = load_marmoset_ecog(animal="Ji2", session_index=4, window=slice(target_start, target_end))
     phase = extract_feature_matrix(
         dataset,
-        FeatureSpec(name="phase", feature="phase", band=(60, 150)),
+        FeatureSpec(name="phase", feature="phase", band=(12, 25)),
         trials=[0],
     )
     return phase
 
 
-def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000, refit_gtol: float = 1e-8, save_dir: str = "./outputs"):
-    # raw, _ = Kuramoto_Model(N=dim, directed_K=True, base_k=0.1)
+def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000, refit_gtol: float = 1e-8, warm_start: bool = False, save_dir: str = "./outputs"):
+    raw, _ = Kuramoto_Model(N=dim, directed_K=False, base_k=0.4)
     # raw = generate_5d_phase_timeseries_data(
     #     n_steps=1500,
     #     graph=[(0, 1), (0, 2), (0, 3), (0, 4)],
@@ -141,117 +140,18 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
     selected_20_with_pfc = [7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
                         1, 2, 5, 6, 16, 21,
                         55, 61, 63]
-    raw = ecog_case3()[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
+    # raw = ecog_case3()[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
     print("raw.shape = ", raw.shape)
+    if raw.shape[0] > 2500:
+        raise ValueError(
+            f"raw has too many time points: {raw.shape[0]}. "
+            "Building pairwise X would require excessive memory."
+        )
     
     # sample_plot(raw, save_dir)
     # import pdb; pdb.set_trace()
 
-    # ============================================================
-    # Feature construction
-    # ============================================================
-    def torus_pair_feature(x_now, x_lag):
-        """
-        x_now, x_lag: shape (dim,)
-
-        Feature order within one lag:
-            for i in range(dim):
-                for j in range(dim):
-                    cc, cs, sc, ss
-        """
-        c_now = np.cos(x_now)
-        s_now = np.sin(x_now)
-        c_lag = np.cos(x_lag)
-        s_lag = np.sin(x_lag)
-
-        dim_local = x_now.shape[0]
-        out = np.empty(4 * dim_local * dim_local, dtype=np.float64)
-
-        k = 0
-        for i in range(dim_local):
-            for j in range(dim_local):
-                out[k:k + 4] = [
-                    c_now[i] * c_lag[j],
-                    c_now[i] * s_lag[j],
-                    s_now[i] * c_lag[j],
-                    s_now[i] * s_lag[j],
-                ]
-                k += 4
-
-        return out
-
-    def valid_positions(n: int, order: int) -> np.ndarray:
-        """0-indexed positions corresponding to I_d={i: d<i<n-d} in 1-indexing."""
-        pos = np.arange(order, n - order - 1, dtype=np.int64)
-        if pos.size < 2:
-            raise ValueError(
-                f"Need at least two valid positions, but got N_d={pos.size}. "
-                f"Increase n or decrease order."
-            )
-        return pos
-
-    def build_pair_index_arrays(n: int, order: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return row-aligned raw positions and local endpoint indices."""
-        pos = valid_positions(n, order)
-        raw_pairs = np.array(list(combinations(pos.tolist(), 2)), dtype=np.int64)
-
-        local_index = {int(p): k for k, p in enumerate(pos)}
-        local_pairs = np.array(
-            [(local_index[int(p)], local_index[int(q)]) for p, q in raw_pairs],
-            dtype=np.int64,
-        )
-        return pos, raw_pairs, local_pairs
-
-    def swap_delta_torus(raw, p, q, order):
-        """Compute h(original) - h(swapped) after swapping raw[p] and raw[q]."""
-        n, dim_local = raw.shape
-        per_lag = 4 * dim_local * dim_local
-
-        delta = np.zeros(order * per_lag, dtype=np.float64)
-
-        def after_value(idx):
-            if idx == p:
-                return raw[q]
-            if idx == q:
-                return raw[p]
-            return raw[idx]
-
-        for lag in range(1, order + 1):
-            affected = {p, q, p + lag, q + lag}
-            affected = [t for t in affected if lag <= t < n]
-
-            before = np.zeros(per_lag, dtype=np.float64)
-            after = np.zeros(per_lag, dtype=np.float64)
-
-            for t in affected:
-                before += torus_pair_feature(raw[t], raw[t - lag])
-                after += torus_pair_feature(after_value(t), after_value(t - lag))
-
-            start = (lag - 1) * per_lag
-            end = lag * per_lag
-            delta[start:end] = before - after
-
-        return delta
-
-    def build_X_torus(raw, order, dtype=np.float32, show_progress: bool = True):
-        """Build the row matrix X_ij = h(original) - h(swapped)."""
-        raw = np.asarray(raw)
-        n, dim_local = raw.shape
-        _, raw_pairs, _ = build_pair_index_arrays(n, order)
-
-        n_pairs = raw_pairs.shape[0]
-        n_features = order * 4 * dim_local * dim_local
-        X = np.empty((n_pairs, n_features), dtype=dtype)
-
-        iterator = enumerate(raw_pairs)
-        if show_progress:
-            iterator = tqdm(iterator, total=n_pairs)
-
-        for row, (p, q) in iterator:
-            X[row] = swap_delta_torus(raw, int(p), int(q), order)
-
-        return X
-
+    from feature import build_X_torus
     def stable_sigmoid(eta: np.ndarray) -> np.ndarray:
         """Numerically stable sigmoid."""
         eta = np.asarray(eta)
@@ -273,18 +173,19 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
         """
         Ridge-stabilized refit for fixed support using L-BFGS-B.
 
-        This minimizes the mean-loss scaled objective
-
-            mean_r log(1 + exp(-X_r^T theta))
-            + 0.5 * ridge_refit * ||theta||^2.
-
-        The mean-loss scaling makes ridge_refit independent of the number of
-        pseudo-pairs K_d.  For TIC diagnostics, use the corresponding curvature
-        adjustment J_lambda = J_hat + ridge_refit * I.
+        X_sub is kept in its original dtype, normally float32.
+        theta, eta, gradient, and objective accumulation remain float64.
         """
-        X64 = np.asarray(X_sub, dtype=np.float64)
-        n_rows = int(X64.shape[0])
-        p_dim = int(X64.shape[1])
+        X_work = np.asarray(X_sub)
+
+        n_rows = int(X_work.shape[0])
+        p_dim = int(X_work.shape[1])
+
+        print(
+            f"[REFIT] X_sub shape={X_work.shape}, "
+            f"dtype={X_work.dtype}, "
+            f"size={X_work.nbytes / 1024**3:.2f} GB"
+        )
 
         if p_dim == 0:
             return np.zeros(0, dtype=np.float64), "C", {
@@ -300,27 +201,88 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
         if init is None:
             theta0 = np.zeros(p_dim, dtype=np.float64)
         else:
-            theta0 = np.asarray(init, dtype=np.float64).reshape(-1)
+            theta0 = np.asarray(
+                init,
+                dtype=np.float64,
+            ).reshape(-1)
+
             if theta0.size != p_dim:
-                theta0 = np.zeros(p_dim, dtype=np.float64)
+                theta0 = np.zeros(
+                    p_dim,
+                    dtype=np.float64,
+                )
 
         def obj(theta: np.ndarray) -> float:
-            eta = X64 @ theta
-            mean_loss = float(np.mean(np.logaddexp(0.0, -eta)))
-            penalty = 0.5 * float(ridge_refit) * float(theta @ theta)
+            # X_work remains float32.
+            # The result eta is evaluated with theta in float64.
+            eta = X_work @ theta
+
+            mean_loss = float(
+                np.mean(
+                    np.logaddexp(0.0, -eta)
+                )
+            )
+
+            penalty = (
+                0.5
+                * float(ridge_refit)
+                * float(theta @ theta)
+            )
+
             return mean_loss + penalty
 
         def grad(theta: np.ndarray) -> np.ndarray:
-            eta = X64 @ theta
+            eta = X_work @ theta
             pi = stable_sigmoid(eta)
-            grad_loss = -(X64.T @ (1.0 - pi)) / n_rows
-            grad_penalty = float(ridge_refit) * theta
+
+            residual = 1.0 - pi
+
+            grad_loss = -(
+                X_work.T @ residual
+            ) / n_rows
+
+            # Explicitly maintain float64 optimizer gradient.
+            grad_loss = np.asarray(
+                grad_loss,
+                dtype=np.float64,
+            )
+
+            grad_penalty = (
+                float(ridge_refit) * theta
+            )
+
             return grad_loss + grad_penalty
 
+        def obj_and_grad(theta: np.ndarray):
+            eta = X_work @ theta
+
+            mean_loss = float(
+                np.mean(np.logaddexp(0.0, -eta))
+            )
+            penalty = (
+                0.5
+                * float(ridge_refit)
+                * float(theta @ theta)
+            )
+
+            pi = stable_sigmoid(eta)
+            residual = 1.0 - pi
+
+            grad_loss = -(
+                X_work.T @ residual
+            ) / n_rows
+
+            grad = (
+                np.asarray(grad_loss, dtype=np.float64)
+                + float(ridge_refit) * theta
+            )
+
+            return mean_loss + penalty, grad
+
         res = minimize(
-            obj,
+            obj_and_grad,
             theta0,
-            jac=grad,
+            jac=True,
             method="L-BFGS-B",
             options={
                 "maxiter": int(maxiter),
@@ -330,8 +292,15 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
             },
         )
 
-        theta = np.asarray(res.x, dtype=np.float64)
-        grad_norm = float(np.linalg.norm(grad(theta)))
+        theta = np.asarray(
+            res.x,
+            dtype=np.float64,
+        )
+
+        grad_norm = float(
+            np.linalg.norm(grad(theta))
+        )
+
         info = {
             "success": bool(res.success),
             "message": str(res.message),
@@ -340,8 +309,16 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
             "grad_norm": grad_norm,
             "ridge_refit": float(ridge_refit),
             "objective_scale": "mean_loss",
+            "X_dtype": str(X_work.dtype),
+            "X_size_gb": float(
+                X_work.nbytes / 1024**3
+            ),
         }
-        is_converged = "C" if res.success else "F"
+
+        is_converged = (
+            "C" if res.success else "F"
+        )
+
         return theta, is_converged, info
 
     # ============================================================
@@ -402,17 +379,20 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
         center_nw: bool = True,
     ) -> dict[str, Any]:
         """Compute TIC diagnostics with both iid-type and Newey-West/HAC I-hat."""
-        theta = np.asarray(theta).reshape(-1)
-        X64 = np.asarray(X, dtype=np.float64)
+        theta = np.asarray(
+            theta,
+            dtype=np.float64,
+        ).reshape(-1)
+        X_work = np.asarray(X)
 
         pos, _, local_pairs = build_pair_index_arrays(n, order)
         N_d = int(pos.size)
         K_d = int(local_pairs.shape[0])
-        p_dim = int(X64.shape[1])
+        p_dim = int(X_work.shape[1])
 
-        if X64.shape[0] != K_d:
+        if X_work.shape[0] != K_d:
             raise ValueError(
-                f"X has {X64.shape[0]} rows, but K_d={K_d} from strict I_d. "
+                f"X has {X_work.shape[0]} rows, but K_d={K_d} from strict I_d. "
                 "Check build_X_torus() and pair indexing."
             )
 
@@ -443,15 +423,34 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
                 "cond_J": np.nan,
             }
 
-        eta = X64 @ theta
+        eta = X_work @ theta
         pi = stable_sigmoid(eta)
         one_minus_pi = 1.0 - pi
         weight = pi * one_minus_pi
 
         log_likelihood = float(-np.sum(np.logaddexp(0.0, -eta)))
 
-        # J_hat = - K_d^{-1} sum H_ij = K_d^{-1} X^T W X.
-        J_hat = (X64.T @ (weight[:, None] * X64)) / K_d
+        # J_hat = K_d^{-1} X^T W X.
+        # Compute in chunks to avoid allocating weight[:, None] * X64 for all rows.
+        chunk_size = 100_000
+        J_sum = np.zeros((p_dim, p_dim), dtype=np.float64)
+        endpoint_score_sum = np.zeros((N_d, p_dim), dtype=np.float64)
+        score_sum = np.zeros(p_dim, dtype=np.float64)
+
+        for start in range(0, K_d, chunk_size):
+            end = min(start + chunk_size, K_d)
+            Xc = X_work[start:end]
+            wc = weight[start:end]
+            rc = one_minus_pi[start:end]
+
+            J_sum += Xc.T @ (wc[:, None] * Xc)
+
+            score_c = rc[:, None] * Xc
+            score_sum += score_c.sum(axis=0)
+            np.add.at(endpoint_score_sum, local_pairs[start:end, 0], score_c)
+            np.add.at(endpoint_score_sum, local_pairs[start:end, 1], score_c)
+
+        J_hat = J_sum / K_d
 
         eigvals_J = np.linalg.eigvalsh(J_hat) if J_hat.size > 0 else np.array([])
         eigval_min_J = float(np.min(eigvals_J)) if eigvals_J.size > 0 else np.nan
@@ -462,14 +461,7 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
             else float("inf")
         )
 
-        # Pairwise score s_ij(theta) = (1-pi_ij(theta)) X_ij.
-        score_rows = one_minus_pi[:, None] * X64
-
-        # Endpoint aggregation for phi_i.
-        endpoint_score_sum = np.zeros((N_d, p_dim), dtype=np.float64)
-        np.add.at(endpoint_score_sum, local_pairs[:, 0], score_rows)
-        np.add.at(endpoint_score_sum, local_pairs[:, 1], score_rows)
-
+        # Endpoint aggregation was accumulated chunk-by-chunk above.
         phi = endpoint_score_sum / (N_d - 1)
         I_hat_theory = 4.0 * (phi.T @ phi) / N_d
 
@@ -521,7 +513,7 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
             "nw_bandwidth": int(q_n),
             "nw_centered": bool(center_nw),
             "ridge": float(ridge),
-            "score_norm": float(np.linalg.norm(score_rows.sum(axis=0))),
+            "score_norm": float(np.linalg.norm(score_sum)),
             "phi_mean_norm": float(np.linalg.norm(phi.mean(axis=0))),
             "eigval_min_J": eigval_min_J,
             "eigval_max_J": eigval_max_J,
@@ -555,7 +547,7 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
         n_pairs, _ = X.shape
         y = np.ones(n_pairs, dtype=np.float32)
 
-        from fista import LogisticRegressionFISTA
+        from fista2 import LogisticRegressionFISTA
 
         clf = LogisticRegressionFISTA(
             eta=None,
@@ -613,17 +605,17 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
             X = build_X_torus(raw, order=order, dtype=np.float32)
             print("Built X!")
 
-            groups = make_edge_lag_groups(dim, order)
+            groups = make_edge_lag_groups(raw.shape[1], order)
             tol = 1e-8
 
-            def fit_lasso_path(i, lam):
+            def fit_lasso_path(i, lam, init=None):
                 theta_hat, is_converged, L1_ = besag_PMLE_fista(
                     raw=raw,
                     order=order,
                     L1_=lam,
                     group_lasso=True,
                     X=X,
-                    init=None,
+                    init=init,
                     groups=groups,
                 )
 
@@ -799,17 +791,23 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
                     "refit_npy_name": refit_npy_name,
                 }
 
-            def run_grid(ls, offset=0, use_parallel=True):
+            def run_grid(ls, offset=0, use_parallel=False, warm_start=False):
+                # Sequential warm start is intentionally preferred here.
+                # With a huge shared X, process parallelism can saturate memory bandwidth,
+                # while warm starts often reduce the number of FISTA iterations substantially.
                 if use_parallel:
-                    path_results = Parallel(n_jobs=4, backend="loky", max_nbytes="100M")(
-                        delayed(fit_lasso_path)(offset + i, lam)
+                    path_results = Parallel(n_jobs=16, backend="loky", max_nbytes="100M")(
+                        delayed(fit_lasso_path)(offset + i, lam, None)
                         for i, lam in enumerate(ls)
                     )
                 else:
-                    path_results = [
-                        fit_lasso_path(offset + i, lam)
-                        for i, lam in enumerate(ls)
-                    ]
+                    path_results = []
+                    theta_init = None
+                    for i, lam in enumerate(ls):
+                        init = theta_init if warm_start else None
+                        result = fit_lasso_path(offset + i, lam, init)
+                        path_results.append(result)
+                        theta_init = result["theta_hat_lasso"].copy()
 
                 unique_candidates = unique_by_support(path_results)
 
@@ -826,11 +824,11 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
 
                 return scored
 
-            use_parallel = False
+            use_parallel = True
 
             # 1st stage: coarse search.
             ls1 = np.logspace(4.0, 0, 30) / X.shape[0]
-            scored1 = run_grid(ls1, offset=0, use_parallel=use_parallel)
+            scored1 = run_grid(ls1, offset=0, use_parallel=use_parallel, warm_start=warm_start)
 
             best1 = min(scored1, key=lambda d: d["plic"])
             best_lam = best1["lambda"]
@@ -844,7 +842,7 @@ def run(dim, order, method, ridge_refit: float = 1e-3, refit_maxiter: int = 5000
             # Optional 2nd stage around best lambda.
             log_best = np.log10(best_lam)
             ls2 = np.logspace(log_best + 0.5, log_best - 0.5, 10)
-            # scored2 = run_grid(ls2, offset=len(scored1), use_parallel=use_parallel)
+            # scored2 = run_grid(ls2, offset=len(scored1), use_parallel=use_parallel, warm_start=warm_start)
             # all_scored = scored1 + scored2
             all_scored = scored1
 
@@ -1021,7 +1019,7 @@ if __name__ == "__main__":
         default="./outputs",
         help="Directory to save outputs"
     )
-    
+
     args = parser.parse_args()
     import os; os.makedirs(args.save_dir, exist_ok=True)
 
@@ -1032,5 +1030,6 @@ if __name__ == "__main__":
         ridge_refit=args.ridge_refit,
         refit_maxiter=args.refit_maxiter,
         refit_gtol=args.refit_gtol,
+        warm_start=False,
         save_dir=args.save_dir
     )
