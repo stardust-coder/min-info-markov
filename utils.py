@@ -84,6 +84,18 @@ def get_bandpass(
     """
     Backward-compatible wrapper for bandpass_filter.
     """
+    import traceback
+
+    print(
+        "NEW get_bandpass:",
+        "start =", start,
+        "end =", end,
+        "samplerate =", samplerate,
+        "axis =", axis,
+    )
+
+    traceback.print_stack(limit=10)
+    
     return bandpass_filter(
         data,
         fs=samplerate,

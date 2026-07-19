@@ -298,14 +298,14 @@ def erdos_renyi_edges(n, p, directed=False, self_loop=False, seed=None):
 
 def Kuramoto_Model(N, seed=None, verbose=False, directed_K=False, T=15, base_k=0.4):
     rng = np.random.default_rng(seed)
-    edge = [(1,3), (1,4), (2,4), (2,5), (3,5)]
-    # edge = erdos_renyi_edges(
-    #     n=N,
-    #     p=0.2,
-    #     directed=directed_K,
-    #     self_loop=False,
-    #     seed=seed,
-    # )
+    # edge = [(1,3), (1,4), (2,4), (2,5), (3,5)]
+    edge = erdos_renyi_edges(
+        n=N,
+        p=0.2,
+        directed=directed_K,
+        self_loop=False,
+        seed=seed,
+    )
     
     adj = {i: [] for i in range(1, N + 1)}
     for i, j in edge:

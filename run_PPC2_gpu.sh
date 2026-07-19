@@ -5,7 +5,7 @@ OPENBLAS_NUM_THREADS=1 \
 python run_PPC2_gpu.py \
     --x-npy ./X.npy \
     --build-x \
-    --dim 5 \
+    --dim 20 \
     --order 1 \
     --num-lambdas 100 \
     --lambda-scale-by-nrows \
@@ -16,7 +16,7 @@ python run_PPC2_gpu.py \
     --ic-ridge 5e-5 \
     --nw-bandwidth -1 \
     --ic-chunk-rows 50000 \
-    --output-dir ./logs/gpu \
+    --output-dir ./logs \
     --dtype float32 \
     --support-abs-tol 1e-8 \
     --overwrite-x 

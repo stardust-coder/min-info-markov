@@ -125,7 +125,7 @@ def ecog_case3():
     dataset = load_marmoset_ecog(animal="Ji2", session_index=4, window=slice(target_start, target_end))
     phase = extract_feature_matrix(
         dataset,
-        FeatureSpec(name="phase", feature="phase", band=(60, 150)),
+        FeatureSpec(name="phase", feature="phase", band=(4, 8)),
         trials=[0],
     )
     return phase

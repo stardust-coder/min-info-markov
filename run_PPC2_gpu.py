@@ -40,9 +40,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from data_sim import Kuramoto_Model, generate_5d_phase_timeseries_data
 from feature import build_X_torus
-
+from data_sim import Kuramoto_Model, generate_5d_phase_timeseries_data
+from data_real import (
+    load_marmoset_ecog,
+    load_marmoset_ecog_epoched,
+    split_marmoset_pre_post_1500ms,
+    extract_feature_matrix,
+    FeatureSpec,
+    NeuralDataset,
+)
 
 @dataclass
 class FistaConfig:
@@ -555,7 +562,8 @@ def atomic_save_npy(
         raise
 
 
-def prepare_x_from_kuramoto(
+
+def prepare_x(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     x_path = args.x_npy.expanduser().resolve()
@@ -588,34 +596,53 @@ def prepare_x_from_kuramoto(
         metadata["reused_existing"] = True
         return metadata
 
-    print(
-        "[raw build] Starting Kuramoto_Model\n"
-        f"  N          : {args.dim}"
-    )
-
     raw_start = perf_counter()
 
-    raw, _ = Kuramoto_Model(
-        N=args.dim,
-        directed_K=False,
-        base_k=2,
-        T=20,
-        seed=4
-    )
+    ### When using Kuramoto Model simulation data, uncomment below.
+    # print(
+    #     "[raw build] Starting Kuramoto_Model\n"
+    #     f"  N          : {args.dim}"
+    # )
+    # raw, _ = Kuramoto_Model(
+    #     N=args.dim,
+    #     directed_K=False,
+    #     base_k=2,
+    #     T=15,
+    #     seed=5
+    # )
 
     # raw = generate_5d_phase_timeseries_data(
     #     n_steps=1500,
     #     graph=[(0, 1), (1, 2), (2, 3), (3, 4)],
     # )
 
-    # from run_PPC2 import ecog_case3
-    # selected_20_with_pfc = [7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
-    #                     1, 2, 5, 6, 16, 21,
-    #                     55, 61, 63]
-    # raw = ecog_case3()[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
+    ### When using Marmoset ECoG Auditory Dataset, uncomment below.
+    def ecog_case3():
+        from scipy.io import loadmat
+        DIR_PATH = "../data/riken-auditory-ECoG/Ji20181207S4c/"
+        EVENT_PATH = DIR_PATH + "Event.mat"
+        mat = loadmat(EVENT_PATH)
+        StimOn = mat["StimOn"].flatten()
+        StimIndex = 920
+        target_start = StimOn[StimIndex] + 850 #ITI
+        target_end = StimOn[StimIndex+1]
+        print("抽出された秒(ms): ", target_start, "~", target_end)
+        print("提示されたtone: ", mat["allTrialIdx"][0, StimIndex], mat["allTrialIdx"][0,StimIndex+1])
+        dataset = load_marmoset_ecog(animal="Ji2", session_index=4, window=slice(target_start, target_end))
+        phase = extract_feature_matrix(
+            dataset,
+            FeatureSpec(name="phase", feature="phase", band=(12, 25)),
+            trials=[0],
+        )
+        return phase
+    
+    selected_20_with_pfc = [7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
+                        1, 2, 5, 6, 16, 21,
+                        55, 61, 63]
+    raw = ecog_case3()[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
 
+    
     from run_PPC2 import sample_plot; sample_plot(raw, str(args.output_dir))
-
     raw_elapsed = perf_counter() - raw_start
     raw = np.asarray(raw)
 
@@ -2446,7 +2473,7 @@ def main() -> None:
         exist_ok=True,
     )
 
-    x_build_metadata = prepare_x_from_kuramoto(
+    x_build_metadata = prepare_x(
         args
     )
 
