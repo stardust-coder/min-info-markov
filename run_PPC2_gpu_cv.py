@@ -7,8 +7,9 @@ Multi-GPU cold-start group elastic-net FISTA experiment.
 1. Kuramoto_Model() でrawデータを生成する。
 2. build_X_torus() でXを生成し、X.npyへ保存する。
 3. X.npyを各GPUへ1回ずつ転送する。
-4. 各lambdaを独立したcold startでFISTA推定する。
-5. 推定結果と係数をlambdaごとに保存する。
+4. 各lambdaをk-foldまたはLOOCVで評価する。
+5. 各lambdaを全データで再推定し、推定結果と係数を保存する。
+6. 平均CV損失が最小のlambdaを選択する。
 
 Xのfeature layout:
     [lag][directed edge][cc, cs, sc, ss]
@@ -97,6 +98,14 @@ class LambdaResult:
     support_threshold: float
     support_string: str
     theta_file: str
+    cv_method: str = ""
+    cv_n_splits: int = 0
+    cv_loss_mean: float = math.nan
+    cv_loss_std: float = math.nan
+    cv_loss_se: float = math.nan
+    cv_total_validation_rows: int = 0
+    cv_converged_folds: int = 0
+    cv_fold_losses: str = ""
     refit_file: str = ""
     refit_converged: bool = False
     refit_iterations: int = 0
@@ -276,10 +285,40 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--compute-ic",
+        "--cv-method",
+        choices=["kfold", "loocv"],
+        default="kfold",
+        help=(
+            "正則化パラメタ選択法。kfoldは--cv-folds分割、"
+            "loocvは1行ずつ検証に回す。"
+        ),
+    )
+    parser.add_argument(
+        "--cv-folds",
+        type=int,
+        default=5,
+        help="--cv-method=kfoldで使う分割数。",
+    )
+    parser.add_argument(
+        "--cv-shuffle",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="各lambdaの選択支持を再推定し、TIC/HAC型PLICを計算する。",
+        help="k-fold分割前に行インデックスをシャッフルする。",
+    )
+    parser.add_argument(
+        "--cv-seed",
+        type=int,
+        default=12345,
+        help="CV分割の乱数seed。",
+    )
+
+    parser.add_argument(
+        "--compute-ic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "互換性のため残している旧オプション。CV選択では通常無効にする。"
+        ),
     )
     parser.add_argument(
         "--refit-ridge",
@@ -354,11 +393,6 @@ def parse_args() -> argparse.Namespace:
         default=Path("./gpu_group_lasso_results"),
     )
 
-    parser.add_argument(
-        "--stim-index",
-        type=int
-    )
-
     return parser.parse_args()
 
 
@@ -387,6 +421,11 @@ def validate_basic_arguments(args: argparse.Namespace) -> None:
         raise ValueError(
             "--num-lambdas must be positive when "
             "--lambda-npy is not used."
+        )
+
+    if args.cv_method == "kfold" and args.cv_folds < 2:
+        raise ValueError(
+            "--cv-folds must be at least 2 for kfold."
         )
 
     if args.max_iter <= 0:
@@ -603,49 +642,18 @@ def prepare_x(
 
     raw_start = perf_counter()
 
-    ### When using Kuramoto Model simulation data, uncomment below.
-    # print(
-    #     "[raw build] Starting Kuramoto_Model\n"
-    #     f"  N          : {args.dim}"
-    # )
-    # raw, _ = Kuramoto_Model(
-    #     N=args.dim,
-    #     directed_K=False,
-    #     base_k=0.4,
-    #     T=5
-    # )
+    ## When using Kuramoto Model simulation data, uncomment below.
+    print(
+        "[raw build] Starting Kuramoto_Model\n"
+        f"  N          : {args.dim}"
+    )
+    raw, _ = Kuramoto_Model(
+        N=args.dim,
+        directed_K=False,
+        base_k=0.4,
+        T=5,
+    )
 
-    # raw = generate_5d_phase_timeseries_data(
-    #     n_steps=1500,
-    #     graph=[(0, 1), (1, 2), (2, 3), (3, 4)],
-    # )
-
-    ### When using Marmoset ECoG Auditory Dataset, uncomment below.
-    def ecog_case3(StimIndex):
-        from scipy.io import loadmat
-        DIR_PATH = "../data/riken-auditory-ECoG/Ji20181207S4c/"
-        # DIR_PATH = "../data/riken-auditory-ECoG/Rc20181205S4c/"
-        EVENT_PATH = DIR_PATH + "Event.mat"
-        mat = loadmat(EVENT_PATH)
-        StimOn = mat["StimOn"].flatten()
-        target_start = StimOn[StimIndex] + 850 #ITI
-        target_end = StimOn[StimIndex+1]
-        print("抽出された秒(ms): ", target_start, "~", target_end)
-        print("提示されたtone: ", mat["allTrialIdx"][0, StimIndex], mat["allTrialIdx"][0,StimIndex+1])
-        dataset = load_marmoset_ecog(animal="Ji2", session_index=4, window=slice(target_start, target_end))
-        phase = extract_feature_matrix(
-            dataset,
-            FeatureSpec(name="phase", feature="phase", band=(4, 8)),
-            trials=[0],
-        )
-        return phase
-    
-    selected_20_with_pfc = [7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
-                        1, 2, 5, 6, 16, 21,
-                        55, 61, 63] #JiとRcは共有でOK. 主にAuditory領域を抽出。
-    raw = ecog_case3(StimIndex=args.stim_index)[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
-
-    
     # from run_PPC2 import sample_plot; sample_plot(raw, str(args.output_dir))
     raw_elapsed = perf_counter() - raw_start
     raw = np.asarray(raw)
@@ -656,7 +664,7 @@ def prepare_x(
     )
 
     print(
-        "[raw build]\n"
+        "[raw build] Kuramoto_Model completed\n"
         f"  raw shape : {raw.shape}\n"
         f"  raw dtype : {raw.dtype}\n"
         f"  raw size  : {raw.nbytes / 1024**3:.4f} GiB\n"
@@ -1834,6 +1842,339 @@ def tic_hac_diagnostics_gpu(
     }
 
 
+
+def make_cv_validation_folds(
+    n_rows: int,
+    method: str,
+    n_splits: int,
+    shuffle: bool,
+    seed: int,
+) -> list[np.ndarray]:
+    """
+    Return validation-row indices for each fold.
+
+    kfold:
+        Each row appears in exactly one validation fold.
+    loocv:
+        One validation row per fold.
+    """
+    if n_rows < 2:
+        raise ValueError(
+            f"Cross-validation requires at least 2 rows, got {n_rows}."
+        )
+
+    indices = np.arange(
+        n_rows,
+        dtype=np.int64,
+    )
+
+    if method == "loocv":
+        return [
+            indices[i:i + 1]
+            for i in range(n_rows)
+        ]
+
+    if method != "kfold":
+        raise ValueError(
+            f"Unsupported CV method: {method}"
+        )
+
+    if n_splits < 2 or n_splits > n_rows:
+        raise ValueError(
+            f"k-fold requires 2 <= cv_folds <= n_rows; "
+            f"got cv_folds={n_splits}, n_rows={n_rows}."
+        )
+
+    if shuffle:
+        rng = np.random.default_rng(
+            int(seed)
+        )
+        rng.shuffle(indices)
+
+    return [
+        fold.astype(
+            np.int64,
+            copy=False,
+        )
+        for fold in np.array_split(
+            indices,
+            n_splits,
+        )
+    ]
+
+
+def complement_indices(
+    n_rows: int,
+    validation_indices: np.ndarray,
+) -> np.ndarray:
+    mask = np.ones(
+        n_rows,
+        dtype=bool,
+    )
+    mask[validation_indices] = False
+    return np.flatnonzero(
+        mask
+    ).astype(
+        np.int64,
+        copy=False,
+    )
+
+
+def evaluate_cv_for_lambda(
+    torch: Any,
+    X: Any,
+    groups: Any,
+    lam: float,
+    config: FistaConfig,
+    validation_folds: list[np.ndarray],
+    gpu_id: int | None = None,
+    lambda_index: int | None = None,
+) -> dict[str, Any]:
+    """
+    Fit one cold-start model per fold and evaluate the unpenalized
+    logistic loss on held-out rows.
+    """
+    n_rows = int(X.shape[0])
+    n_folds = len(validation_folds)
+
+    fold_losses: list[float] = []
+    fold_sizes: list[int] = []
+    fold_elapsed_sec: list[float] = []
+    fold_fit_sec: list[float] = []
+    fold_index_select_sec: list[float] = []
+
+    converged_folds = 0
+    total_weighted_loss = 0.0
+
+    cv_start = perf_counter()
+
+    prefix = (
+        f"[GPU {gpu_id}] "
+        if gpu_id is not None
+        else ""
+    )
+
+    for fold_index, validation_np in enumerate(
+        validation_folds,
+        start=1,
+    ):
+        fold_start = perf_counter()
+
+        print(
+            f"{prefix}"
+            f"lambda[{lambda_index}] "
+            f"fold {fold_index}/{n_folds} started",
+            flush=True,
+        )
+
+        # --------------------------------------------------
+        # CPU側インデックス作成
+        # --------------------------------------------------
+        index_start = perf_counter()
+
+        train_np = complement_indices(
+            n_rows=n_rows,
+            validation_indices=validation_np,
+        )
+
+        train_indices = torch.as_tensor(
+            train_np,
+            dtype=torch.long,
+            device=X.device,
+        )
+
+        validation_indices = torch.as_tensor(
+            validation_np,
+            dtype=torch.long,
+            device=X.device,
+        )
+
+        torch.cuda.synchronize(X.device)
+
+        index_elapsed = perf_counter() - index_start
+
+        # --------------------------------------------------
+        # GPU上で行抽出
+        # index_selectは新しいテンソルを作る
+        # --------------------------------------------------
+        select_start = perf_counter()
+
+        X_train = X.index_select(
+            0,
+            train_indices,
+        )
+
+        X_validation = X.index_select(
+            0,
+            validation_indices,
+        )
+
+        torch.cuda.synchronize(X.device)
+
+        select_elapsed = perf_counter() - select_start
+
+        # --------------------------------------------------
+        # FISTA
+        # --------------------------------------------------
+        fit_start = perf_counter()
+
+        theta_fold, fit_info = fit_group_lasso_fista(
+            torch=torch,
+            X=X_train,
+            groups=groups,
+            lam=lam,
+            config=config,
+        )
+
+        torch.cuda.synchronize(X.device)
+
+        fit_elapsed = perf_counter() - fit_start
+
+        # --------------------------------------------------
+        # 検証損失
+        # --------------------------------------------------
+        validation_start = perf_counter()
+
+        with torch.no_grad():
+            validation_loss = smooth_loss(
+                torch=torch,
+                X=X_validation,
+                theta=theta_fold,
+                ridge=0.0,
+            )
+
+        loss_value = float(
+            validation_loss.item()
+        )
+
+        torch.cuda.synchronize(X.device)
+
+        validation_elapsed = (
+            perf_counter() - validation_start
+        )
+
+        validation_size = int(
+            validation_np.size
+        )
+
+        if not math.isfinite(loss_value):
+            raise FloatingPointError(
+                "Non-finite validation loss at "
+                f"fold {fold_index}."
+            )
+
+        fold_losses.append(loss_value)
+        fold_sizes.append(validation_size)
+        fold_fit_sec.append(fit_elapsed)
+        fold_index_select_sec.append(select_elapsed)
+
+        total_weighted_loss += (
+            loss_value * validation_size
+        )
+
+        if bool(fit_info["converged"]):
+            converged_folds += 1
+
+        fold_elapsed = (
+            perf_counter() - fold_start
+        )
+
+        fold_elapsed_sec.append(
+            fold_elapsed
+        )
+
+        elapsed_total = (
+            perf_counter() - cv_start
+        )
+
+        average_fold_sec = (
+            elapsed_total / fold_index
+        )
+
+        remaining_fold_sec = (
+            average_fold_sec
+            * (n_folds - fold_index)
+        )
+
+        print(
+            f"{prefix}"
+            f"lambda[{lambda_index}] "
+            f"fold {fold_index}/{n_folds} completed | "
+            f"loss={loss_value:.8g} | "
+            f"iter={fit_info['iterations']} | "
+            f"converged={fit_info['converged']} | "
+            f"indices={index_elapsed:.2f}s | "
+            f"select={select_elapsed:.2f}s | "
+            f"fit={fit_elapsed:.2f}s | "
+            f"validation={validation_elapsed:.2f}s | "
+            f"fold_total={fold_elapsed:.2f}s | "
+            f"ETA={remaining_fold_sec / 60.0:.1f}min",
+            flush=True,
+        )
+
+        del theta_fold
+        del X_train
+        del X_validation
+        del train_indices
+        del validation_indices
+
+    total_validation_rows = int(
+        sum(fold_sizes)
+    )
+
+    cv_loss_mean = (
+        total_weighted_loss
+        / total_validation_rows
+    )
+
+    if len(fold_losses) > 1:
+        cv_loss_std = float(
+            np.std(
+                np.asarray(
+                    fold_losses,
+                    dtype=np.float64,
+                ),
+                ddof=1,
+            )
+        )
+
+        cv_loss_se = (
+            cv_loss_std
+            / math.sqrt(len(fold_losses))
+        )
+    else:
+        cv_loss_std = 0.0
+        cv_loss_se = 0.0
+
+    cv_elapsed_sec = (
+        perf_counter() - cv_start
+    )
+
+    print(
+        f"{prefix}"
+        f"lambda[{lambda_index}] CV completed | "
+        f"mean_loss={cv_loss_mean:.8g} | "
+        f"total={cv_elapsed_sec / 60.0:.2f}min | "
+        f"fit_total={sum(fold_fit_sec) / 60.0:.2f}min | "
+        f"select_total="
+        f"{sum(fold_index_select_sec):.2f}s",
+        flush=True,
+    )
+
+    return {
+        "cv_loss_mean": float(cv_loss_mean),
+        "cv_loss_std": float(cv_loss_std),
+        "cv_loss_se": float(cv_loss_se),
+        "cv_total_validation_rows": total_validation_rows,
+        "cv_converged_folds": converged_folds,
+        "cv_fold_losses": fold_losses,
+        "cv_fold_elapsed_sec": fold_elapsed_sec,
+        "cv_fold_fit_sec": fold_fit_sec,
+        "cv_fold_index_select_sec": fold_index_select_sec,
+        "cv_elapsed_sec": float(cv_elapsed_sec),
+    }
+
+
 def gpu_worker(
     gpu_id: int,
     lambda_indices: list[int],
@@ -1844,6 +2185,10 @@ def gpu_worker(
     output_dir: str,
     config_dict: dict[str, Any],
     transfer_chunk_rows: int,
+    cv_method: str,
+    cv_folds: int,
+    cv_shuffle: bool,
+    cv_seed: int,
 ) -> list[dict[str, Any]]:
     os.environ.setdefault(
         "OMP_NUM_THREADS",
@@ -1991,6 +2336,20 @@ def gpu_worker(
         f"{total_memory / 1024**3:.2f} GiB"
     )
 
+    validation_folds = make_cv_validation_folds(
+        n_rows=int(X.shape[0]),
+        method=cv_method,
+        n_splits=cv_folds,
+        shuffle=cv_shuffle,
+        seed=cv_seed,
+    )
+
+    print(
+        f"[GPU {gpu_id}] CV method={cv_method}, "
+        f"folds={len(validation_folds)}, "
+        f"shuffle={cv_shuffle}, seed={cv_seed}"
+    )
+
     theta_dir = (
         Path(output_dir)
         / "theta"
@@ -2017,6 +2376,24 @@ def gpu_worker(
         )
 
         try:
+            cv_info = evaluate_cv_for_lambda(
+                torch=torch,
+                X=X,
+                groups=groups,
+                lam=lam,
+                config=config,
+                validation_folds=validation_folds,
+                gpu_id=gpu_id,
+                lambda_index=lambda_index,
+            )
+
+            print(
+                f"[GPU {gpu_id}] "
+                f"lambda[{lambda_index}] CV loss="
+                f"{cv_info['cv_loss_mean']:.8g}"
+            )
+
+            # CV評価後、保存用係数を全データでcold-start再推定する。
             theta, info = fit_group_lasso_fista(
                 torch=torch,
                 X=X,
@@ -2054,11 +2431,11 @@ def gpu_worker(
                 / theta_filename
             )
 
-            np.save(
-                theta_path,
-                theta_cpu,
-                allow_pickle=False,
-            )
+            # np.save(
+            #     theta_path,
+            #     theta_cpu,
+            #     allow_pickle=False,
+            # )
 
             ic_values: dict[str, Any] = {}
             refit_filename = ""
@@ -2123,13 +2500,13 @@ def gpu_worker(
                         / refit_filename
                     )
 
-                    np.save(
-                        refit_path,
-                        theta_refit.detach()
-                        .cpu()
-                        .numpy(),
-                        allow_pickle=False,
-                    )
+                    # np.save(
+                    #     refit_path,
+                    #     theta_refit.detach()
+                    #     .cpu()
+                    #     .numpy(),
+                    #     allow_pickle=False,
+                    # )
 
                     refit_filename = str(
                         refit_path
@@ -2221,6 +2598,37 @@ def gpu_worker(
                 ),
                 theta_file=str(
                     theta_path
+                ),
+                cv_method=str(
+                    cv_method
+                ),
+                cv_n_splits=int(
+                    len(validation_folds)
+                ),
+                cv_loss_mean=float(
+                    cv_info["cv_loss_mean"]
+                ),
+                cv_loss_std=float(
+                    cv_info["cv_loss_std"]
+                ),
+                cv_loss_se=float(
+                    cv_info["cv_loss_se"]
+                ),
+                cv_total_validation_rows=int(
+                    cv_info[
+                        "cv_total_validation_rows"
+                    ]
+                ),
+                cv_converged_folds=int(
+                    cv_info[
+                        "cv_converged_folds"
+                    ]
+                ),
+                cv_fold_losses=",".join(
+                    f"{value:.17g}"
+                    for value in cv_info[
+                        "cv_fold_losses"
+                    ]
                 ),
                 refit_file=refit_filename,
                 refit_converged=bool(
@@ -2352,6 +2760,10 @@ def gpu_worker(
                 support_threshold=math.nan,
                 support_string="",
                 theta_file="",
+                cv_method=str(cv_method),
+                cv_n_splits=int(
+                    len(validation_folds)
+                ),
                 error=traceback.format_exc(),
             )
 
@@ -2367,15 +2779,15 @@ def gpu_worker(
             result_dict
         )
 
-        pd.DataFrame(
-            results
-        ).sort_values(
-            "lambda_index"
-        ).to_csv(
-            Path(output_dir)
-            / f"gpu_{gpu_id}_partial.csv",
-            index=False,
-        )
+        # pd.DataFrame(
+        #     results
+        # ).sort_values(
+        #     "lambda_index"
+        # ).to_csv(
+        #     Path(output_dir)
+        #     / f"gpu_{gpu_id}_partial.csv",
+        #     index=False,
+        # )
 
     del X
     del groups
@@ -2494,6 +2906,15 @@ def main() -> None:
         x_path=args.x_npy,
     )
 
+    if (
+        args.cv_method == "kfold"
+        and args.cv_folds > X_meta.shape[0]
+    ):
+        raise ValueError(
+            f"--cv-folds={args.cv_folds} exceeds "
+            f"the number of rows {X_meta.shape[0]}."
+        )
+
     gpu_ids = [
         int(x.strip())
         for x in args.gpus.split(",")
@@ -2516,12 +2937,12 @@ def main() -> None:
         n_rows=X_meta.shape[0],
     )
 
-    np.save(
-        args.output_dir
-        / "lambdas.npy",
-        lambdas,
-        allow_pickle=False,
-    )
+    # np.save(
+    #     args.output_dir
+    #     / "lambdas.npy",
+    #     lambdas,
+    #     allow_pickle=False,
+    # )
 
     config = FistaConfig(
         max_iter=args.max_iter,
@@ -2544,7 +2965,7 @@ def main() -> None:
             args.objective_check_every
         ),
         dtype=args.dtype,
-        compute_ic=args.compute_ic,
+        compute_ic=False,
         fista_ridge=args.fista_ridge,
         refit_ridge=args.refit_ridge,
         refit_max_iter=args.refit_max_iter,
@@ -2679,6 +3100,10 @@ def main() -> None:
                 str(args.output_dir),
                 asdict(config),
                 args.x_transfer_chunk_rows,
+                args.cv_method,
+                args.cv_folds,
+                args.cv_shuffle,
+                args.cv_seed,
             ): gpu_id
             for gpu_id in gpu_ids
         }
@@ -2726,22 +3151,22 @@ def main() -> None:
                 worker_results
             )
 
-            if (
-                completed
-                % args.save_every
-                == 0
-                or completed
-                == len(lambdas)
-            ):
-                pd.DataFrame(
-                    all_results
-                ).sort_values(
-                    "lambda_index"
-                ).to_csv(
-                    args.output_dir
-                    / "gpu_fista_results.csv",
-                    index=False,
-                )
+            # if (
+            #     completed
+            #     % args.save_every
+            #     == 0
+            #     or completed
+            #     == len(lambdas)
+            # ):
+            #     pd.DataFrame(
+            #         all_results
+            #     ).sort_values(
+            #         "lambda_index"
+            #     ).to_csv(
+            #         args.output_dir
+            #         / "gpu_fista_results.csv",
+            #         index=False,
+            #     )
 
     elapsed_all = (
         perf_counter()
@@ -2770,46 +3195,52 @@ def main() -> None:
         / "gpu_fista_results.csv"
     )
 
-    result_df.to_csv(
-        result_path,
-        index=False,
-    )
+    # result_df.to_csv(
+    #     result_path,
+    #     index=False,
+    # )
 
     if (
         len(result_df)
-        and "plic" in result_df.columns
+        and "cv_loss_mean" in result_df.columns
     ):
-        valid_ic = result_df[
+        cv_numeric = pd.to_numeric(
+            result_df["cv_loss_mean"],
+            errors="coerce",
+        )
+
+        valid_cv = result_df[
             np.isfinite(
-                pd.to_numeric(
-                    result_df["plic"],
-                    errors="coerce",
-                )
+                cv_numeric
             )
         ].copy()
 
-        if len(valid_ic):
-            valid_ic = valid_ic.sort_values(
+        if len(valid_cv):
+            valid_cv["cv_loss_mean"] = pd.to_numeric(
+                valid_cv["cv_loss_mean"],
+                errors="coerce",
+            )
+            valid_cv = valid_cv.sort_values(
                 [
-                    "plic",
+                    "cv_loss_mean",
                     "lambda_index",
                 ]
             )
 
-            valid_ic.to_csv(
-                args.output_dir
-                / "information_criterion_ranking.csv",
-                index=False,
-            )
+            # valid_cv.to_csv(
+            #     args.output_dir
+            #     / "cross_validation_ranking.csv",
+            #     index=False,
+            # )
 
             best_row = (
-                valid_ic.iloc[0]
+                valid_cv.iloc[0]
                 .to_dict()
             )
 
             with (
                 args.output_dir
-                / "best_model_by_plic.json"
+                / "best_model_by_cv.json"
             ).open(
                 "w",
                 encoding="utf-8",
@@ -2834,15 +3265,15 @@ def main() -> None:
                 )
 
             print(
-                "Best PLIC model: "
+                "Best CV model: "
                 f"lambda_index="
                 f"{int(best_row['lambda_index'])}, "
                 f"lambda="
                 f"{float(best_row['lambda_value']):.12g}, "
                 f"active_groups="
                 f"{int(best_row['active_groups'])}, "
-                f"PLIC="
-                f"{float(best_row['plic']):.6f}"
+                f"CV loss="
+                f"{float(best_row['cv_loss_mean']):.8g}"
             )
 
     if len(result_df):

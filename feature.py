@@ -48,6 +48,7 @@ def torus_pair_feature_from_trig(
             for j in range(dim):
                 cc, cs, sc, ss
     """
+    
     return (
         trig_now[:, None, :, None]
         * trig_lag[None, :, None, :]

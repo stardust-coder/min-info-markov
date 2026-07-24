@@ -149,7 +149,8 @@ class MarmosetRecordingInfo:
 
 MARMOSET_RECORDINGS: dict[str, MarmosetRecordingInfo] = {
     "Ji": MarmosetRecordingInfo("Ji20180308", (1, 3, 5, 15)),
-    "Ji2": MarmosetRecordingInfo("Ji20181207", (4, 5)),
+    "Ji2": MarmosetRecordingInfo("Ji20181207", (4, None)),
+    "Rc2": MarmosetRecordingInfo("Rc20181205", (4, None)),
     "Or": MarmosetRecordingInfo("Or20171207", (2, 4, 6, 16)),
 }
 

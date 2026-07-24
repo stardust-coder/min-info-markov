@@ -922,10 +922,16 @@ def make_all_heatmaps(
             else math.nan
         )
 
+        if "/theta/theta/" in row["theta_file"]:
+            tmp = row["theta_file"]
+        else:
+            tmp = row["theta_file"].replace("theta", "theta/theta")
+
         theta_path = resolve_theta_path(
-            theta_file=row["theta_file"],
+            theta_file=tmp,
             output_dir=output_dir,
         )
+        
 
         theta = np.load(
             theta_path,
