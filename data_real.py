@@ -149,9 +149,9 @@ class MarmosetRecordingInfo:
 
 MARMOSET_RECORDINGS: dict[str, MarmosetRecordingInfo] = {
     "Ji": MarmosetRecordingInfo("Ji20180308", (1, 3, 5, 15)),
-    "Ji2": MarmosetRecordingInfo("Ji20181207", (4, None)),
-    "Rc2": MarmosetRecordingInfo("Rc20181205", (4, None)),
     "Or": MarmosetRecordingInfo("Or20171207", (2, 4, 6, 16)),
+    "Ji2": MarmosetRecordingInfo("Ji20181207", (4, None)),
+    "Rc2": MarmosetRecordingInfo("Rc20181219", (8, None)),
 }
 
 
@@ -161,8 +161,6 @@ MARMOSET_RECORDINGS: dict[str, MarmosetRecordingInfo] = {
 
 DEFAULT_HUMAN_WINDOW = slice(0, 2500)
 DEFAULT_MARMOSET_WINDOW = slice(0, 25000)
-DEFAULT_HUMAN_TRIALS = tuple(range(10))
-DEFAULT_MARMOSET_TRIALS = (0,)
 DEFAULT_MARMOSET_SAMPLERATE = 1000.0
 
 

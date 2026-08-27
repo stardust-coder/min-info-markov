@@ -105,7 +105,6 @@ def build_X_torus(
     n, dim_local = raw.shape
     _, raw_pairs, _ = build_pair_index_arrays(n, order)
 
-    # Major quick optimization: compute sin/cos once instead of per pair.
     trig = precompute_trig(raw, dtype=dtype)
 
     n_pairs = raw_pairs.shape[0]

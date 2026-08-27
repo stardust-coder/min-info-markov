@@ -42,14 +42,7 @@ import pandas as pd
 
 from feature import build_X_torus
 from data_sim import Kuramoto_Model, generate_5d_phase_timeseries_data
-from data_real import (
-    load_marmoset_ecog,
-    load_marmoset_ecog_epoched,
-    split_marmoset_pre_post_1500ms,
-    extract_feature_matrix,
-    FeatureSpec,
-    NeuralDataset,
-)
+from data_real import *
 
 @dataclass
 class FistaConfig:
@@ -308,12 +301,6 @@ def parse_args() -> argparse.Namespace:
         default=20,
     )
     parser.add_argument(
-        "--ic-ridge",
-        type=float,
-        default=1e-8,
-        help="J_hatの線形方程式を安定化するridge。",
-    )
-    parser.add_argument(
         "--nw-bandwidth",
         type=int,
         default=-1,
@@ -437,10 +424,9 @@ def validate_basic_arguments(args: argparse.Namespace) -> None:
     if (
         args.fista_ridge < 0
         or args.refit_ridge < 0
-        or args.ic_ridge < 0
     ):
         raise ValueError(
-            "--fista-ridge, --refit-ridge, and --ic-ridge "
+            "--fista-ridge, --refit-ridge"
             "must be nonnegative."
         )
 
@@ -567,6 +553,148 @@ def atomic_save_npy(
         raise
 
 
+MARMOSET_CONFIGS = {
+    "Ji2": {
+        "dir_path": Path("../data/riken-auditory-ECoG/Ji20181207S4c/"),
+        "session_index": 4,
+    },
+    "Rc2": {
+        "dir_path": Path("../data/riken-auditory-ECoG/Rc20181219S8c/"),
+        "session_index": 8,
+    },
+}
+
+
+SELECTED_20_WITH_PFC = [
+    7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
+    1, 2, 5, 6, 16, 21,
+    55, 61, 63,
+] #Auditory領域を中心に20電極を抽出。
+
+
+def build_kuramoto_raw(dim: int):
+    print(
+        "[raw build] Starting Kuramoto_Model\n"
+        f"  N : {dim}"
+    )
+
+    raw, _ = Kuramoto_Model(
+        N=dim,
+        directed_K=False,
+        base_k=0.4,
+        T=5,
+    )
+
+    return raw
+
+
+def build_synthetic_5d_raw():
+    return generate_5d_phase_timeseries_data(
+        n_steps=1500,
+        graph=[
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 4),
+        ],
+    )
+
+
+def build_marmoset_ecog_raw(
+    stim_index: int,
+    animal: str = "Ji2",
+    band: tuple[int, int] = (110, 140),
+):
+    from scipy.io import loadmat
+
+    if animal not in MARMOSET_CONFIGS:
+        raise ValueError(
+            f"animal must be one of {list(MARMOSET_CONFIGS)}"
+        )
+
+    config = MARMOSET_CONFIGS[animal]
+    dir_path = config["dir_path"]
+    session_index = config["session_index"]
+
+    event_path = dir_path / "Event.mat"
+    mat = loadmat(event_path)
+
+    stim_on = mat["StimOn"].flatten()
+
+    target_start = stim_on[stim_index] + 850
+    target_end = stim_on[stim_index + 1]
+
+    print(
+        "抽出された秒(ms): ",
+        target_start,
+        "~",
+        target_end,
+    )
+    print(
+        "提示されたtone: ",
+        mat["allTrialIdx"][0, stim_index],
+        mat["allTrialIdx"][0, stim_index + 1],
+    )
+
+    dataset = load_marmoset_ecog(
+        animal=animal,
+        session_index=session_index,
+        window=slice(target_start, target_end),
+    )
+
+    phase = extract_feature_matrix(
+        dataset,
+        FeatureSpec(
+            name="phase",
+            feature="phase",
+            band=band,
+        ),
+        trials=[0],
+    )
+
+    channel_indices = [
+        channel - 1
+        for channel in SELECTED_20_WITH_PFC
+    ]
+
+    return phase[:, channel_indices]
+
+
+def build_human_eeg_raw(
+    patient_id: int = 2,
+    state_name: str = "baseline",
+    band: tuple[int, int] = (110, 140),
+):
+
+    def get_state_id(patient_id, state_name):
+        state_names = HUMAN_EEG_RECORDINGS[patient_id].state_ids
+        states = {"baseline":0, "mild": 1, "moderate": 2, "recovery": 3}
+        return state_names[states[state_name]]
+
+    human = load_human_eeg(
+        patient_id=patient_id,
+        state_id=get_state_id(patient_id, state_name),
+        window=slice(0, 2000),
+    )
+
+    phase_spec = FeatureSpec(
+        name="phase",
+        feature="phase",
+        band=band,
+    )
+
+    channel_indices = human_channel_indices(
+        human,
+        dim=19,
+    )
+
+    return extract_feature_matrix(
+        human,
+        phase_spec,
+        trials=[0],
+        channels=channel_indices,
+    )
+
 
 def prepare_x(
     args: argparse.Namespace,
@@ -601,55 +729,33 @@ def prepare_x(
         metadata["reused_existing"] = True
         return metadata
 
-    raw_start = perf_counter()
+    # -------------------------------------------------------------
+    # Select ONE dataset by commenting/uncommenting.
+    # -------------------------------------------------------------
 
-    ### When using Kuramoto Model simulation data, uncomment below.
-    # print(
-    #     "[raw build] Starting Kuramoto_Model\n"
-    #     f"  N          : {args.dim}"
-    # )
-    # raw, _ = Kuramoto_Model(
-    #     N=args.dim,
-    #     directed_K=False,
-    #     base_k=0.4,
-    #     T=5
+    # Kuramoto Model
+    # raw = build_kuramoto_raw(
+    #     dim=args.dim,
     # )
 
-    # raw = generate_5d_phase_timeseries_data(
-    #     n_steps=1500,
-    #     graph=[(0, 1), (1, 2), (2, 3), (3, 4)],
+    # Synthetic 5D phase time series
+    # raw = build_synthetic_5d_raw()
+
+    # Marmoset ECoG Auditory Dataset
+    # raw = build_marmoset_ecog_raw(
+    #     stim_index=args.stim_index,
+    #     animal="Rc2",
+    #     band=(25, 40),
     # )
 
-    ### When using Marmoset ECoG Auditory Dataset, uncomment below.
-    def ecog_case3(StimIndex):
-        from scipy.io import loadmat
-        DIR_PATH = "../data/riken-auditory-ECoG/Ji20181207S4c/"
-        # DIR_PATH = "../data/riken-auditory-ECoG/Rc20181205S4c/"
-        EVENT_PATH = DIR_PATH + "Event.mat"
-        mat = loadmat(EVENT_PATH)
-        StimOn = mat["StimOn"].flatten()
-        target_start = StimOn[StimIndex] + 850 #ITI
-        target_end = StimOn[StimIndex+1]
-        print("抽出された秒(ms): ", target_start, "~", target_end)
-        print("提示されたtone: ", mat["allTrialIdx"][0, StimIndex], mat["allTrialIdx"][0,StimIndex+1])
-        dataset = load_marmoset_ecog(animal="Ji2", session_index=4, window=slice(target_start, target_end))
-        phase = extract_feature_matrix(
-            dataset,
-            FeatureSpec(name="phase", feature="phase", band=(4, 8)),
-            trials=[0],
-        )
-        return phase
-    
-    selected_20_with_pfc = [7, 8, 9, 19, 20, 27, 28, 29, 35, 36, 37,
-                        1, 2, 5, 6, 16, 21,
-                        55, 61, 63] #JiとRcは共有でOK. 主にAuditory領域を抽出。
-    raw = ecog_case3(StimIndex=args.stim_index)[:, [x-1 for x in selected_20_with_pfc]] #electrodes selection.
+    # Human EEG
+    raw = build_human_eeg_raw(
+        patient_id=args.stim_index, #これはstim_indexではなく、引数入力の際に中身はpatient_idとすることに注意.
+        state_name="baseline",
+        band=(8, 15),
+    )
 
-    
     # from run_PPC2 import sample_plot; sample_plot(raw, str(args.output_dir))
-    raw_elapsed = perf_counter() - raw_start
-    raw = np.asarray(raw)
-
     validate_raw_array(
         raw=raw,
         expected_dim=args.dim,
@@ -660,7 +766,6 @@ def prepare_x(
         f"  raw shape : {raw.shape}\n"
         f"  raw dtype : {raw.dtype}\n"
         f"  raw size  : {raw.nbytes / 1024**3:.4f} GiB\n"
-        f"  elapsed   : {raw_elapsed:.2f} sec"
     )
 
     output_dtype = numpy_dtype_from_name(
@@ -769,9 +874,6 @@ def prepare_x(
             "raw_dtype": str(raw.dtype),
             "raw_size_gib": float(
                 raw.nbytes / 1024**3
-            ),
-            "raw_elapsed_sec": float(
-                raw_elapsed
             ),
             "X_shape": list(X.shape),
             "X_dtype": str(X.dtype),
@@ -2557,7 +2659,7 @@ def main() -> None:
         refit_history_size=(
             args.refit_history_size
         ),
-        ic_ridge=args.ic_ridge,
+        ic_ridge=args.refit_ridge,
         nw_bandwidth=args.nw_bandwidth,
         nw_center=args.nw_center,
         ic_chunk_rows=args.ic_chunk_rows,

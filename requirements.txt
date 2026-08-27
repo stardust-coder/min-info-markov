@@ -4,3 +4,5 @@ pandas
 tqdm
 joblib
 statsmodels
+pymatreader
+h5py

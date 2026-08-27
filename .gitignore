@@ -8,6 +8,6 @@ __pycache__
 *.log
 *.csv
 *.png
-*.npy
+*.npy*
 .DS_Store
 

@@ -2,8 +2,12 @@
 SECONDS=0
 
 
-for i in $(seq 999 999); do
-    echo "=== Run ${i}/1000 ==="
+list=(2 3 5 6 7 8 9 10 13 14 18 20 22 23 24 25 26 27 28 29)
+
+for i in "${list[@]}"; do
+    OUTDIR="./logs/human/${i}/alpha/baseline"
+    
+    echo "=== Run Patient ${i} ==="
 
     CUDA_VISIBLE_DEVICES=0,1,2,3 \
     OMP_NUM_THREADS=1 \
@@ -12,7 +16,7 @@ for i in $(seq 999 999); do
     python run_PPC2_gpu.py \
         --x-npy ./X.npy \
         --build-x \
-        --dim 20 \
+        --dim 19 \
         --order 1 \
         --num-lambdas 100 \
         --lambda-scale-by-nrows \
@@ -20,17 +24,14 @@ for i in $(seq 999 999); do
         --compute-ic \
         --fista-ridge 5e-5 \
         --refit-ridge 5e-5 \
-        --ic-ridge 5e-5 \
         --nw-bandwidth -1 \
         --ic-chunk-rows 50000 \
-        --output-dir "./logs/marmoset20-2/${i}/theta" \
+        --output-dir "$OUTDIR" \
         --dtype float32 \
         --support-abs-tol 1e-8 \
         --overwrite-x \
         --stim-index ${i}
 done
-
-bash make_adjmat_gpu.sh
 
 time=$SECONDS
 echo $time
